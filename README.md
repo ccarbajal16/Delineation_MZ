@@ -4,6 +4,8 @@ A standalone R workflow that delineates agricultural management zones from
 multi-layer soil-property rasters and point observations using Fuzzy C-Means
 (FCM) clustering, PCA dimensionality reduction, and spatial interpolation.
 
+![Management zone map](outputs/mz_zone_map.png)
+
 ---
 
 ## Overview
