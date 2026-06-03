@@ -1,0 +1,47 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200" role="img" aria-label="MZ Delimitation — Fuzzy C-Means Management Zones">
+  <title>MZ Delimitation</title>
+  <desc>Circular emblem with three overlapping translucent zones (red, orange, green) representing Fuzzy C-Means clustering output, on a dark navy field with a blue accent ring. White "MZ" monogram in the centre, "FUZZY C-MEANS" caption underneath.</desc>
+
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%"  stop-color="#1a252f"/>
+      <stop offset="100%" stop-color="#2c3e50"/>
+    </linearGradient>
+    <filter id="softEdge" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="5"/>
+    </filter>
+  </defs>
+
+  <!-- Dark navy field -->
+  <circle cx="100" cy="100" r="92" fill="url(#bgGrad)"/>
+
+  <!-- Blue accent ring -->
+  <circle cx="100" cy="100" r="92" fill="none" stroke="#3498db" stroke-width="2.5"/>
+
+  <!-- Subtle inner ring -->
+  <circle cx="100" cy="100" r="86" fill="none" stroke="#ffffff" stroke-width="0.5" opacity="0.18"/>
+
+  <!-- Faint grid crosshairs — subtle GIS feel -->
+  <g stroke="#ffffff" stroke-width="0.3" opacity="0.1">
+    <line x1="35"  y1="100" x2="165" y2="100"/>
+    <line x1="100" y1="35"  x2="100" y2="165"/>
+  </g>
+
+  <!-- Three overlapping fuzzy zones (FCM output metaphor) -->
+  <g filter="url(#softEdge)">
+    <circle cx="78"  cy="88"  r="34" fill="#e74c3c" opacity="0.82"/>
+    <circle cx="122" cy="88"  r="32" fill="#f39c12" opacity="0.82"/>
+    <circle cx="100" cy="128" r="34" fill="#27ae60" opacity="0.82"/>
+  </g>
+
+  <!-- MZ monogram -->
+  <text x="100" y="118" text-anchor="middle"
+        font-family="Inter, 'Helvetica Neue', Arial, sans-serif"
+        font-weight="900" font-size="52" fill="#ffffff">MZ</text>
+
+  <!-- Caption -->
+  <text x="100" y="178" text-anchor="middle"
+        font-family="Inter, 'Helvetica Neue', Arial, sans-serif"
+        font-weight="600" font-size="8" fill="#3498db" letter-spacing="2.5">FUZZY C-MEANS</text>
+</svg>
