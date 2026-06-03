@@ -1,0 +1,12 @@
+# Shiny app diagnostic log (regenerated on every run)
+mz_debug.log
+
+# macOS / OS cruft
+.DS_Store
+**/.DS_Store
+
+# R session files
+.Rproj.user/
+.Rhistory
+.RData
+.Ruserdata

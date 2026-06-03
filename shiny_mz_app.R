@@ -28,6 +28,13 @@ suppressPackageStartupMessages({
   library(shinycssloaders)
 })
 
+# ── Null-coalescing operator ───────────────────────────────────────────────
+# `%||%` is base R since 4.4.0 (and exported by several packages above), but
+# define a fallback so the app also runs on older R without surprises.
+if (!exists("%||%", mode = "function")) {
+  `%||%` <- function(a, b) if (is.null(a)) b else a
+}
+
 # ── Increase file upload limit (default is 5 MB — too small for raster files)
 #    1 GB = 1e9 bytes | Adjust as needed for your largest raster
 options(shiny.maxRequestSize = 1e9)   # 1 GB limit — covers most GeoTIFFs
@@ -61,7 +68,8 @@ fpi_index <- function(U) {
 
 # Normalized Classification Entropy (NCE)
 # NCE = -sum(u_ik * log(u_ik)) / (n * log(k))
-# Optimal k = argmax(NCE) — maximum classification entropy
+# Optimal k = argmin(NCE) — lowest normalized entropy = crispest partition
+#             (matches the argmin selection below and the reference script)
 nce_index <- function(U) {
   k <- ncol(U)
   n <- nrow(U)
@@ -696,14 +704,14 @@ ui <- fluidPage(
                       "XB — Xie-Beni Index" = "XB",
                       "PE — Partition Entropy" = "PE",
                       "FS — Fukuyama-Sugeno Index" = "FS",
-                      "Auto (FPI + NCE consensus)" = "auto"
+                      "Auto (XB + FPI + NCE consensus)" = "auto"
                     ),
                     selected = "FPI"
                   )
                 ),
                 div(class = "info-msg",
-                  HTML("<strong>FPI / NCE:</strong> argmax (peak)<br>
-                        <strong>XB / PE / FS:</strong> argmin (valley)"))
+                  HTML("<strong>FPI / NCE / XB / PE / FS:</strong> argmin (lower is better)<br>
+                        <strong>Auto:</strong> lowest XB + FPI + NCE consensus rank"))
               )
             ),
 
@@ -969,14 +977,18 @@ ui <- fluidPage(
               ),
               div(class = "card-body",
                 div(style = "display: flex; flex-direction: column; gap: 12px;",
-                  actionButton("btn_export_validation", "Download Validation CSV",
-                               icon("download"), style = "background:#2c3e50; color:white; width:100%;"),
-                  actionButton("btn_export_zone_stats", "Download Zone Statistics CSV",
-                               icon("download"), style = "background:#2c3e50; color:white; width:100%;"),
-                  actionButton("btn_export_assignments", "Download Point Assignments CSV",
-                               icon("download"), style = "background:#2c3e50; color:white; width:100%;"),
-                  actionButton("btn_export_anova", "Download ANOVA Results CSV",
-                               icon("download"), style = "background:#2c3e50; color:white; width:100%;")
+                  downloadButton("btn_export_validation", "Download Validation CSV",
+                                 icon = icon("download"),
+                                 style = "background:#2c3e50; color:white; width:100%;"),
+                  downloadButton("btn_export_zone_stats", "Download Zone Statistics CSV",
+                                 icon = icon("download"),
+                                 style = "background:#2c3e50; color:white; width:100%;"),
+                  downloadButton("btn_export_assignments", "Download Point Assignments CSV",
+                                 icon = icon("download"),
+                                 style = "background:#2c3e50; color:white; width:100%;"),
+                  downloadButton("btn_export_anova", "Download ANOVA Results CSV",
+                                 icon = icon("download"),
+                                 style = "background:#2c3e50; color:white; width:100%;")
                 )
               )
             ),
@@ -986,10 +998,12 @@ ui <- fluidPage(
               ),
               div(class = "card-body",
                 div(style = "display: flex; flex-direction: column; gap: 12px;",
-                  actionButton("btn_export_zone_tif", "Download Zones GeoTIFF (.tif)",
-                               icon("layer-group"), style = "background:#16a085; color:white; width:100%;"),
-                  actionButton("btn_export_zone_png", "Download Zone Map PNG (300 DPI)",
-                               icon("image"), style = "background:#16a085; color:white; width:100%;"),
+                  downloadButton("btn_export_zone_tif", "Download Zones GeoTIFF (.tif)",
+                                 icon = icon("layer-group"),
+                                 style = "background:#16a085; color:white; width:100%;"),
+                  downloadButton("btn_export_zone_png", "Download Zone Map PNG (300 DPI)",
+                                 icon = icon("image"),
+                                 style = "background:#16a085; color:white; width:100%;"),
                   div(style = "font-size:12px; color:#7f8c8d;",
                       "GeoTIFF keeps the CRS for GIS; PNG is a 300-DPI publication figure.")
                 )
@@ -1163,7 +1177,7 @@ ui <- fluidPage(
             span(class = "card-title",
               icon("image"), " Sample output — Zone maps"),
             div(style = "font-size:12px; color:#7f8c8d;",
-                "From the bundled SoilGrids demo (k = 3, m = 2)")
+                "From the bundled SoilGrids demo (k = 5, m = 2)")
           ),
           div(class = "card-body",
             fluidRow(
@@ -1174,7 +1188,7 @@ ui <- fluidPage(
                 div(class = "help-caption",
                   strong("Management zone map"),
                   br(), span(style = "color:#7f8c8d;",
-                    "Hard zone (k = 3).  Each pixel assigned to the
+                    "Hard zone (k = 5).  Each pixel assigned to the
                     cluster with the highest fuzzy membership."))
               ),
               column(6,
@@ -1600,6 +1614,20 @@ server <- function(input, output, session) {
   observeEvent(input$btn_run_validation, {
     req(rv$pca_scores)
 
+    # Guard the validation range BEFORE seq() and before any output$ is set:
+    # numericInput min/max are advisory only, so a user can type k_min > k_max
+    # or leave a field blank (NA).  seq() would then build a reversed range or
+    # throw "from must be a finite number".  Bailing out here keeps the run
+    # bounded like the reference (K_RANGE <- 2:6) and never reaches the
+    # spinner-prone output assignments below.
+    if (is.na(input$k_min) || is.na(input$k_max) ||
+        input$k_min < 2 || input$k_min > input$k_max) {
+      showNotification(
+        "Min clusters must be a number ≥ 2 and ≤ Max clusters.",
+        type = "error", duration = 6)
+      return()
+    }
+
     k_range <- seq(input$k_min, input$k_max)
     rv$validation_df <- runValidation(rv$pca_scores, k_range = k_range, m = input$fcm_m)
     rv$selected_k    <- selectOptimalK(rv$validation_df, input$opt_method)
@@ -1613,8 +1641,9 @@ server <- function(input, output, session) {
     output$opt_fpi_display <- renderText(sprintf("%.4f", sel$FPI))
     output$opt_nce_display <- renderText(sprintf("%.4f", sel$NCE))
     output$opt_xb_display  <- renderText(sprintf("%.4f", sel$XB))
-    output$validation_method_label <- renderText(paste0("Method: ", method,
-      if (method %in% c("FPI", "NCE", "auto")) " (argmax)" else " (argmin)"))
+    # Every index here is selected by argmin (lower is better), and the
+    # consensus picks the lowest summed rank — so the label is always argmin.
+    output$validation_method_label <- renderText(paste0("Method: ", method, " (argmin)"))
 
     # Main validation plot
     output$plot_validation <- renderPlotly({
@@ -2133,100 +2162,109 @@ server <- function(input, output, session) {
   outputOptions(output, "table_zone_means",   suspendWhenHidden = FALSE)
   outputOptions(output, "table_anova",        suspendWhenHidden = FALSE)
 
-  # ── Export ─────────────────────────────────────────────────────────────────
-  observeEvent(input$btn_export_validation, {
-    req(rv$validation_df)
-    write.csv(rv$validation_df, "mz_validation.csv", row.names = FALSE)
-    showNotification("Validation CSV saved.", type = "message")
-  })
+  # ── Export (browser downloads) ───────────────────────────────────────────────
+  # Each control is a downloadButton wired to a TOP-LEVEL downloadHandler, NOT an
+  # observeEvent that writes into the working directory.  This is the correct
+  # Shiny idiom: the file is STREAMED to the user's browser, so exports work both
+  # locally AND on a deployed host (shinyapps.io / Shiny Server / Posit Cloud),
+  # where the previous write-to-getwd() approach silently wrote files the user
+  # could never reach.  Defining each as output$<id> <- downloadHandler(...) at
+  # the top level also keeps us clear of the side-effect-output pattern that the
+  # rest of the app was refactored to avoid.  Each content function writes to the
+  # `file` path Shiny provides; req()/validate() keep it inert (and explain why)
+  # until the prerequisite step has produced data.
 
-  observeEvent(input$btn_export_zone_stats, {
-    req(rv$fcm_result, rv$df_vars)
-    df_stats <- cbind(rv$df_vars, Zone = rv$fcm_result$cluster_id)
-    zone_means <- aggregate(. ~ Zone, data = df_stats, FUN = mean)
-    write.csv(zone_means, "mz_zone_stats.csv", row.names = FALSE)
-    showNotification("Zone statistics CSV saved.", type = "message")
-  })
+  output$btn_export_validation <- downloadHandler(
+    filename = "mz_validation.csv",
+    content  = function(file) {
+      req(rv$validation_df)
+      write.csv(rv$validation_df, file, row.names = FALSE)
+    }
+  )
 
-  observeEvent(input$btn_export_assignments, {
-    req(rv$obs_sf)
-    if (!"fid" %in% names(rv$obs_sf)) rv$obs_sf$fid <- seq_len(nrow(rv$obs_sf))
-    sel <- intersect(c("fid", "Zone"), names(rv$obs_sf))
-    assign_df <- as.data.frame(st_drop_geometry(rv$obs_sf[, sel]))
-    write.csv(assign_df, "mz_point_assignments.csv", row.names = FALSE)
-    showNotification("Point assignments CSV saved.", type = "message")
-  })
+  output$btn_export_zone_stats <- downloadHandler(
+    filename = "mz_zone_stats.csv",
+    content  = function(file) {
+      req(rv$fcm_result, rv$df_vars)
+      df_stats   <- cbind(rv$df_vars, Zone = rv$fcm_result$cluster_id)
+      zone_means <- aggregate(. ~ Zone, data = df_stats, FUN = mean)
+      write.csv(zone_means, file, row.names = FALSE)
+    }
+  )
 
-  observeEvent(input$btn_export_anova, {
-    req(rv$fcm_result, rv$df_vars, rv$soil_vars)
-    df_stats <- cbind(rv$df_vars, Zone = rv$fcm_result$cluster_id)
-    anova_res <- lapply(rv$soil_vars, function(v) {
-      aov_out <- summary(aov(as.formula(paste(v, "~ Zone")), data = df_stats))[[1]]
-      aov_out$"Pr(>F)"[1]
-    })
-    anova_df <- data.frame(Variable = rv$soil_vars, `p-value` = unlist(anova_res))
-    write.csv(anova_df, "mz_anova.csv", row.names = FALSE)
-    showNotification("ANOVA CSV saved.", type = "message")
-  })
+  output$btn_export_assignments <- downloadHandler(
+    filename = "mz_point_assignments.csv",
+    content  = function(file) {
+      req(rv$obs_sf)
+      if (!"fid" %in% names(rv$obs_sf)) rv$obs_sf$fid <- seq_len(nrow(rv$obs_sf))
+      sel       <- intersect(c("fid", "Zone"), names(rv$obs_sf))
+      assign_df <- as.data.frame(st_drop_geometry(rv$obs_sf[, sel]))
+      write.csv(assign_df, file, row.names = FALSE)
+    }
+  )
+
+  output$btn_export_anova <- downloadHandler(
+    filename = "mz_anova.csv",
+    content  = function(file) {
+      req(rv$fcm_result, rv$df_vars, rv$soil_vars)
+      df_stats  <- cbind(rv$df_vars, Zone = rv$fcm_result$cluster_id)
+      # Per-variable tryCatch (mirrors the zoneStats() reactive): a degenerate
+      # model (zero residual df, single-value group) yields NA instead of
+      # aborting the whole export.
+      anova_res <- vapply(rv$soil_vars, function(v) {
+        fit <- aov(as.formula(paste(v, "~ Zone")), data = df_stats)
+        tryCatch(summary(fit)[[1]]$"Pr(>F)"[1], error = function(e) NA_real_)
+      }, numeric(1), USE.NAMES = FALSE)
+      anova_df <- data.frame(Variable = rv$soil_vars, `p-value` = anova_res)
+      write.csv(anova_df, file, row.names = FALSE)
+    }
+  )
 
   # ── Map exports ──────────────────────────────────────────────────────────────
   # Both reuse rv$zone_hard, the full-resolution hard-zone raster cached by
-  # zoneMap() (Part 4).  req() keeps the handler inert until the zone map exists,
-  # and any failure surfaces as an on-screen error notification rather than a
-  # silent crash — same defensive style as the rest of the app.
+  # zoneMap() (Part 4).  validate(need()) keeps the download inert with a
+  # readable message until the zone map has been generated.
 
   # GeoTIFF — full-resolution integer zone raster, CRS preserved for GIS.
-  observeEvent(input$btn_export_zone_tif, {
-    if (is.null(rv$zone_hard)) {
-      showNotification("Generate the zone map (Step 4) before exporting the GeoTIFF.",
-                       type = "warning", duration = 6)
-      return(invisible(NULL))
-    }
-    tryCatch({
-      out <- "mz_zones.tif"
-      terra::writeRaster(rv$zone_hard, out, overwrite = TRUE,
+  # writeRaster needs a real .tif extension to select the GTiff driver, but the
+  # path Shiny hands the content function is an extensionless tempfile — so write
+  # to a .tif temp first, then copy it onto the download target.  Filename matches
+  # the reference script / README (mz_zone_map.tif).
+  output$btn_export_zone_tif <- downloadHandler(
+    filename = "mz_zone_map.tif",
+    content  = function(file) {
+      validate(need(!is.null(rv$zone_hard),
+                    "Generate the zone map (Step 4) before exporting the GeoTIFF."))
+      tmp <- tempfile(fileext = ".tif")
+      terra::writeRaster(rv$zone_hard, tmp, overwrite = TRUE,
                          datatype = "INT1U", NAflag = 255)
-      mzlog("EXPORT: wrote GeoTIFF ", out, " | cells=", terra::ncell(rv$zone_hard))
-      showNotification(paste0("Zones GeoTIFF saved → ", out), type = "message",
-                       duration = 5)
-    }, error = function(e) {
-      mzlog("EXPORT: GeoTIFF error — ", conditionMessage(e))
-      showNotification(paste0("GeoTIFF export failed: ", conditionMessage(e)),
-                       type = "error", duration = 10)
-    })
-  })
+      file.copy(tmp, file, overwrite = TRUE)
+      mzlog("EXPORT: streamed GeoTIFF download | cells=", terra::ncell(rv$zone_hard))
+    }
+  )
 
   # PNG — 300-DPI publication figure of the hard-zone map, with a zone legend.
-  observeEvent(input$btn_export_zone_png, {
-    if (is.null(rv$zone_hard)) {
-      showNotification("Generate the zone map (Step 4) before exporting the PNG.",
-                       type = "warning", duration = 6)
-      return(invisible(NULL))
-    }
-    tryCatch({
-      out  <- "mz_zone_map.png"
+  output$btn_export_zone_png <- downloadHandler(
+    filename = "mz_zone_map.png",
+    content  = function(file) {
+      validate(need(!is.null(rv$zone_hard),
+                    "Generate the zone map (Step 4) before exporting the PNG."))
       k    <- rv$k_final
       cols <- zoneColors(k)
-      grDevices::png(out, width = 8, height = 6, units = "in", res = 300)
+      grDevices::png(file, width = 8, height = 6, units = "in", res = 300)
       on.exit(grDevices::dev.off(), add = TRUE)
       # No col= : rv$zone_hard carries the value->colour table (coltab) set by
       # asCategoricalZones(), so each zone id draws in its fixed colour.  The
-      # manual legend uses zoneColors(k) by index, which now matches exactly.
+      # manual legend uses zoneColors(k) by index, which matches exactly.
       terra::plot(rv$zone_hard,
                   main = paste0("Management Zone Map  (k = ", k,
                                 ", Fuzzy C-Means, m = ", isolate(input$fcm_m), ")"),
                   axes = FALSE, box = FALSE, legend = FALSE)
       graphics::legend("topright", legend = paste0("Zone ", seq_len(k)),
                        fill = cols, border = NA, bty = "n", cex = 0.9)
-      mzlog("EXPORT: wrote PNG ", out, " @300dpi | k=", k)
-      showNotification(paste0("Zone map PNG (300 DPI) saved → ", out),
-                       type = "message", duration = 5)
-    }, error = function(e) {
-      mzlog("EXPORT: PNG error — ", conditionMessage(e))
-      showNotification(paste0("PNG export failed: ", conditionMessage(e)),
-                       type = "error", duration = 10)
-    })
-  })
+      mzlog("EXPORT: streamed PNG download @300dpi | k=", k)
+    }
+  )
 
   output$session_summary <- renderUI({
     k <- rv$k_final
@@ -2235,13 +2273,21 @@ server <- function(input, output, session) {
     method <- input$opt_method
 
     tagList(
-      div(strong("Optimal k:"), " ", rv$selected_k),
+      div(strong("Optimal k:"), " ", rv$selected_k %||% "—"),
       div(strong("Method:"), " ", method),
       div(strong("Points:"), " ", n_pts),
       div(strong("Variables:"), " ", n_vars),
-      div(strong("FPI:"), " ", sprintf("%.4f", rv$validation_df$FPI[rv$validation_df$k == rv$selected_k][1])),
-      div(strong("NCE:"), " ", sprintf("%.4f", rv$validation_df$NCE[rv$validation_df$k == rv$selected_k][1])),
-      div(strong("Xie-Beni:"), " ", sprintf("%.4f", rv$validation_df$XB[rv$validation_df$k == rv$selected_k][1]))
+      # The index values only exist once validation has run; before that
+      # rv$validation_df is NULL and these lines would render as blank labels.
+      if (!is.null(rv$validation_df)) {
+        tagList(
+          div(strong("FPI:"), " ", sprintf("%.4f", rv$validation_df$FPI[rv$validation_df$k == rv$selected_k][1])),
+          div(strong("NCE:"), " ", sprintf("%.4f", rv$validation_df$NCE[rv$validation_df$k == rv$selected_k][1])),
+          div(strong("Xie-Beni:"), " ", sprintf("%.4f", rv$validation_df$XB[rv$validation_df$k == rv$selected_k][1]))
+        )
+      } else {
+        div(class = "info-msg", "Run validation (Step 2) to see FPI / NCE / Xie-Beni.")
+      }
     )
   })
 

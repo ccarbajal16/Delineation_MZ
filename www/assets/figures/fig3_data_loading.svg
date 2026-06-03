@@ -1,0 +1,358 @@
+<?xml version="1.0" encoding="UTF-8" standalone="no"?>
+<svg
+   viewBox="0 0 460 560"
+   font-family="'Inter','Segoe UI',Arial,sans-serif"
+   version="1.1"
+   id="svg18"
+   sodipodi:docname="fig3_data_loading.svg"
+   inkscape:version="1.4.4 (dcaf3e7, 2026-05-05)"
+   xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape"
+   xmlns:sodipodi="http://sodipodi.sourceforge.net/DTD/sodipodi-0.dtd"
+   xmlns="http://www.w3.org/2000/svg"
+   xmlns:svg="http://www.w3.org/2000/svg">
+  <sodipodi:namedview
+     id="namedview18"
+     pagecolor="#505050"
+     bordercolor="#eeeeee"
+     borderopacity="1"
+     inkscape:showpageshadow="0"
+     inkscape:pageopacity="0"
+     inkscape:pagecheckerboard="0"
+     inkscape:deskcolor="#505050"
+     showgrid="false"
+     inkscape:zoom="1.89"
+     inkscape:cx="230.15873"
+     inkscape:cy="407.14286"
+     inkscape:window-width="1920"
+     inkscape:window-height="1022"
+     inkscape:window-x="0"
+     inkscape:window-y="328"
+     inkscape:window-maximized="1"
+     inkscape:current-layer="svg18" />
+  <defs
+     id="defs1">
+    <marker
+       style="overflow:visible"
+       id="Triangle"
+       refX="0"
+       refY="0"
+       orient="auto-start-reverse"
+       inkscape:stockid="Triangle arrow"
+       markerWidth="1"
+       markerHeight="1"
+       viewBox="0 0 1 1"
+       inkscape:isstock="true"
+       inkscape:collect="always"
+       preserveAspectRatio="xMidYMid">
+      <path
+         transform="scale(0.5)"
+         style="fill:context-stroke;fill-rule:evenodd;stroke:context-stroke;stroke-width:1pt"
+         d="M 5.77,0 -2.88,5 V -5 Z"
+         id="path135" />
+    </marker>
+    <marker
+       id="d1"
+       markerWidth="10"
+       markerHeight="10"
+       refX="5"
+       refY="8"
+       orient="auto"
+       markerUnits="userSpaceOnUse">
+      <path
+         d="M0,0 L10,0 L5,8 Z"
+         fill="#3498db"
+         id="path1" />
+    </marker>
+  </defs>
+  <rect
+     x="0"
+     y="0"
+     width="460"
+     height="560"
+     fill="#ffffff"
+     id="rect1" />
+  <!-- start -->
+  <rect
+     x="130"
+     y="20"
+     width="200"
+     height="40"
+     rx="20"
+     fill="#3498db"
+     id="rect2" />
+  <text
+     x="230"
+     y="45"
+     fill="#ffffff"
+     font-size="13"
+     font-weight="700"
+     text-anchor="middle"
+     id="text2">Click &quot;Load Data&quot;</text>
+  <line
+     x1="230"
+     y1="60"
+     x2="230"
+     y2="77.782448"
+     stroke="#3498db"
+     stroke-width="1.7981"
+     marker-end="url(#d1)"
+     id="line2"
+     style="marker-end:url(#Triangle)" />
+  <!-- step 1 -->
+  <rect
+     x="60"
+     y="84"
+     width="340"
+     height="64"
+     rx="10"
+     fill="#ffffff"
+     stroke="#3498db"
+     stroke-width="1.5"
+     id="rect3" />
+  <circle
+     cx="84"
+     cy="116"
+     r="13"
+     fill="#eaf4fb"
+     id="circle3" />
+  <text
+     x="84"
+     y="120"
+     fill="#3498db"
+     font-size="13"
+     font-weight="700"
+     text-anchor="middle"
+     id="text3">1</text>
+  <text
+     x="108"
+     y="110"
+     fill="#1a252f"
+     font-size="12"
+     font-weight="700"
+     id="text4">Read boundary · st_read()</text>
+  <text
+     x="108"
+     y="130"
+     fill="#7f8c8d"
+     font-size="10"
+     id="text5">Detect CRS → reproject to raster CRS if needed</text>
+  <line
+     x1="230"
+     y1="148"
+     x2="230"
+     y2="161.49933"
+     stroke="#3498db"
+     stroke-width="1.73201"
+     marker-end="url(#d1)"
+     id="line5"
+     style="marker-end:url(#Triangle)" />
+  <!-- step 2 -->
+  <rect
+     x="60"
+     y="168"
+     width="340"
+     height="64"
+     rx="10"
+     fill="#ffffff"
+     stroke="#3498db"
+     stroke-width="1.5"
+     id="rect5" />
+  <circle
+     cx="84"
+     cy="200"
+     r="13"
+     fill="#eaf4fb"
+     id="circle5" />
+  <text
+     x="84"
+     y="204"
+     fill="#3498db"
+     font-size="13"
+     font-weight="700"
+     text-anchor="middle"
+     id="text6">2</text>
+  <text
+     x="108"
+     y="194"
+     fill="#1a252f"
+     font-size="12"
+     font-weight="700"
+     id="text7">Read raster stack · terra::rast()</text>
+  <text
+     x="108"
+     y="214"
+     fill="#7f8c8d"
+     font-size="10"
+     id="text8">Crop + mask to boundary extent</text>
+  <line
+     x1="230"
+     y1="232"
+     x2="230"
+     y2="245.49933"
+     stroke="#3498db"
+     stroke-width="1.73201"
+     marker-end="url(#d1)"
+     id="line8"
+     style="marker-end:url(#Triangle)" />
+  <!-- step 3 -->
+  <rect
+     x="60"
+     y="252"
+     width="340"
+     height="64"
+     rx="10"
+     fill="#ffffff"
+     stroke="#3498db"
+     stroke-width="1.5"
+     id="rect8" />
+  <circle
+     cx="84"
+     cy="284"
+     r="13"
+     fill="#eaf4fb"
+     id="circle8" />
+  <text
+     x="84"
+     y="288"
+     fill="#3498db"
+     font-size="13"
+     font-weight="700"
+     text-anchor="middle"
+     id="text9">3</text>
+  <text
+     x="108"
+     y="278"
+     fill="#1a252f"
+     font-size="12"
+     font-weight="700"
+     id="text10">Read points CSV</text>
+  <text
+     x="108"
+     y="298"
+     fill="#7f8c8d"
+     font-size="10"
+     id="text11">Rename cols → X/Y · to sf · reproject to raster CRS</text>
+  <line
+     x1="230"
+     y1="316"
+     x2="230"
+     y2="330.08328"
+     stroke="#3498db"
+     stroke-width="1.76907"
+     marker-end="url(#d1)"
+     id="line11"
+     style="marker-end:url(#Triangle)" />
+  <!-- step 4 -->
+  <rect
+     x="60"
+     y="336"
+     width="340"
+     height="64"
+     rx="10"
+     fill="#ffffff"
+     stroke="#3498db"
+     stroke-width="1.5"
+     id="rect11" />
+  <circle
+     cx="84"
+     cy="368"
+     r="13"
+     fill="#eaf4fb"
+     id="circle11" />
+  <text
+     x="84"
+     y="372"
+     fill="#3498db"
+     font-size="13"
+     font-weight="700"
+     text-anchor="middle"
+     id="text12">4</text>
+  <text
+     x="108"
+     y="362"
+     fill="#1a252f"
+     font-size="12"
+     font-weight="700"
+     id="text13">Extract raster values · terra::extract()</text>
+  <text
+     x="108"
+     y="382"
+     fill="#7f8c8d"
+     font-size="10"
+     id="text14">At point locations · median-impute any NAs</text>
+  <line
+     x1="230"
+     y1="400"
+     x2="230"
+     y2="414.20599"
+     stroke="#3498db"
+     stroke-width="1.77676"
+     marker-end="url(#d1)"
+     id="line14"
+     style="marker-end:url(#Triangle)" />
+  <!-- step 5 -->
+  <rect
+     x="60"
+     y="420"
+     width="340"
+     height="64"
+     rx="10"
+     fill="#ffffff"
+     stroke="#3498db"
+     stroke-width="1.5"
+     id="rect14" />
+  <circle
+     cx="84"
+     cy="452"
+     r="13"
+     fill="#eaf4fb"
+     id="circle14" />
+  <text
+     x="84"
+     y="456"
+     fill="#3498db"
+     font-size="13"
+     font-weight="700"
+     text-anchor="middle"
+     id="text15">5</text>
+  <text
+     x="108"
+     y="446"
+     fill="#1a252f"
+     font-size="12"
+     font-weight="700"
+     id="text16">Normalize &amp; reduce</text>
+  <text
+     x="108"
+     y="466"
+     fill="#7f8c8d"
+     font-size="10"
+     id="text17">Min-max → [0,1] · PCA, keep PCs to ≥ 80% variance</text>
+  <line
+     x1="230"
+     y1="484"
+     x2="230"
+     y2="498.20599"
+     stroke="#3498db"
+     stroke-width="1.77676"
+     marker-end="url(#d1)"
+     id="line17"
+     style="marker-end:url(#Triangle)" />
+  <!-- done -->
+  <rect
+     x="130"
+     y="504"
+     width="200"
+     height="40"
+     rx="20"
+     fill="#27ae60"
+     id="rect17" />
+  <text
+     x="230"
+     y="529"
+     fill="#ffffff"
+     font-size="12.5"
+     font-weight="700"
+     text-anchor="middle"
+     id="text18">Ready for Step 2 ✓</text>
+</svg>

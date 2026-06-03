@@ -1,8 +1,12 @@
 # Management Zone Delimitation — Fuzzy C-Means Clustering
 
-A standalone R workflow that delineates agricultural management zones from
-multi-layer soil-property rasters and point observations using Fuzzy C-Means
-(FCM) clustering, PCA dimensionality reduction, and spatial interpolation.
+An R toolkit that delineates agricultural management zones from multi-layer
+soil-property rasters and point observations using Fuzzy C-Means (FCM)
+clustering, PCA dimensionality reduction, and spatial interpolation. It ships
+in two interchangeable forms that share the same numeric pipeline:
+
+- **Batch script** — [`delineation_management_zones.R`](delineation_management_zones.R), run from the command line for reproducible, scripted output.
+- **Interactive app** — [`shiny_mz_app.R`](shiny_mz_app.R), a point-and-click Shiny app that walks you through the same six steps in the browser. See [Interactive Shiny app](#interactive-shiny-app) below.
 
 ![Management zone map](outputs/mz_zone_map.png)
 
@@ -27,7 +31,11 @@ are written as reproducible GeoTIFF, CSV, and PNG artifacts.
 
 ```
 Delineation_MZ/
-├── delineation_management_zones.R   # Main script
+├── delineation_management_zones.R   # Batch / command-line script
+├── shiny_mz_app.R                   # Interactive Shiny app
+├── www/                             # App static assets (logo, User Guide figures)
+│   ├── mz_logo.svg
+│   └── assets/figures/              # Diagrams + sample outputs shown in the guide
 ├── data/
 │   ├── agro_geo.gpkg                # Study-area boundary polygon
 │   ├── soil_predictions.tif         # Multi-layer soil-property raster
@@ -56,6 +64,9 @@ install.packages("ggrepel")
 | `gstat` | Ordinary kriging and IDW interpolation |
 | `ggplot2` / `patchwork` | Validation and zone map figures |
 
+The **Shiny app** needs a few more packages on top of the above — see
+[Interactive Shiny app](#interactive-shiny-app) for the full install line.
+
 ---
 
 ## Running the script
@@ -73,7 +84,102 @@ MZ_INTERPOLATION_METHOD=idw Rscript delineation_management_zones.R
 
 ---
 
+## Interactive Shiny app
+
+`shiny_mz_app.R` is a self-contained Shiny app that runs the **same** PCA → FCM →
+validation → kriging pipeline as the batch script, but interactively: you upload
+your data, tune settings, and step through six tabs in the browser. It opens on a
+built-in **User Guide** tab, so you can also learn the workflow from inside the app.
+
+### Install
+
+The app needs the analysis packages plus the Shiny UI stack:
+
+```r
+install.packages(c(
+  # analysis (same as the batch script)
+  "e1071", "vegan", "gstat", "sf", "terra", "sp",
+  "ggplot2", "ggrepel", "patchwork", "tidyr",
+  # interactive UI
+  "shiny", "shinythemes", "shinyjs", "shinycssloaders", "plotly", "DT"
+), repos = "https://cran.r-project.org")
+```
+
+### Launch
+
+Run it from the **repository root** (so the app can serve the `www/` assets —
+the logo and the User Guide figures):
+
+```bash
+R -e 'shiny::runApp("shiny_mz_app.R", launch.browser = TRUE)'
+```
+
+Or open `shiny_mz_app.R` in RStudio and click **Run App**. The app prints a local
+URL (e.g. `http://127.0.0.1:xxxx`) and opens it in your default browser.
+
+> The upload limit is set to 1 GB, which covers most field-scale GeoTIFFs. Adjust
+> `options(shiny.maxRequestSize = ...)` near the top of the script if you need more.
+
+### Data you upload
+
+The same three inputs as the batch script, supplied through the **Data Input** tab:
+
+| Input | Formats | Notes |
+|-------|---------|-------|
+| Study-area boundary | `.gpkg`, `.shp`, `.geojson` | Polygon; the raster is cropped & masked to it. |
+| Soil-property raster | `.tif`, `.asc`, `.bil` | One band per property; layer names should match the CSV columns where possible. |
+| Observation points | `.csv` | Longitude/latitude (or projected X/Y) + numeric soil columns. Include an `fid` column to join assignments back to your data. |
+
+You then pick **≥ 3 numeric variables** to cluster on, set the coordinate column
+names, and choose how point coordinates are interpreted (**auto-detect**,
+`EPSG:4326`, or *same as raster CRS*).
+
+### The six steps
+
+| # | Tab | What you do |
+|---|-----|-------------|
+| 1 | **Data Input** | Upload the three files, select variables, set CRS / fuzziness `m` / PCA variance threshold, then **Load Data & Continue** (runs PCA). |
+| 2 | **Validation** | Pick the k range and the optimal-k method (FPI / NCE / XB / PE / FS, or the XB+FPI+NCE *Auto* consensus), then **Run Validation**. All indices are **lower-is-better**; the chosen k is highlighted. |
+| 3 | **Clustering** | Accept the optimal k or override it, then **Run FCM Clustering** to get hard zone assignments per point. |
+| 4 | **Zone Maps** | Membership surfaces are kriged and the hard zone map is built automatically (large rasters are downsampled so the UI stays responsive). Use **Regenerate** to recompute. |
+| 5 | **Statistics** | Per-zone mean soil properties, one-way ANOVA per variable, and a comparison plot. |
+| 6 | **Export** | Download the results (see below). |
+
+### Try it with the bundled demo
+
+The `data/` folder is a ready-made SoilGrids example. Upload `agro_geo.gpkg`,
+`soil_predictions.tif`, and `soilgrids_data.csv`, keep the defaults, and you will
+reproduce the **k = 5** solution shown in this README.
+
+### Exports
+
+The **Export** tab streams files straight to your browser's download folder
+(nothing is written to the server), matching the batch script's output names:
+
+| Button | File |
+|--------|------|
+| Validation CSV | `mz_validation.csv` |
+| Zone statistics CSV | `mz_zone_stats.csv` |
+| Point assignments CSV | `mz_point_assignments.csv` |
+| ANOVA results CSV | `mz_anova.csv` |
+| Zones GeoTIFF | `mz_zone_map.tif` (INT1U, CRS preserved) |
+| Zone map PNG | `mz_zone_map.png` (300 DPI, with legend) |
+
+### Troubleshooting
+
+- **Zone Maps tab shows "Waiting for…"** — finish the step it names (you must load
+  data, run validation, then clustering before maps can build).
+- **Step 4 feels slow** — kriging is the heavy step (a few seconds to ~30 s on a
+  field-scale raster). Larger rasters are downsampled internally; it will not hang.
+- **A diagnostic log** is written to `mz_debug.log` next to the script. Set
+  `MZ_DEBUG <- FALSE` near the top to silence it.
+
+---
+
 ## Workflow steps
+
+> The steps below describe the **batch script** (`delineation_management_zones.R`).
+> The Shiny app performs the same computations through the tabs listed above.
 
 ### Step 1 — Load and align spatial data
 
@@ -117,7 +223,7 @@ candidate k in {2, 3, 4, 5, 6}. Five validity indices are computed:
 | Index | Formula / description | Direction |
 |-------|-----------------------|-----------|
 | **XB** (Xie–Beni) | Intra-cluster compactness / inter-cluster separation | lower is better |
-| **FPI** (Fuzzy Partition Index) | `1 − ((k·PC − 1)/(k − 1))` | lower is better |
+| **FPI** (Fuzziness Performance Index) | `1 − ((k·PC − 1)/(k − 1))` | lower is better |
 | **NCE** (Normalized Class Entropy) | `PE / log(k)` | lower is better |
 | **PE** (Partition Entropy) | Mean fuzzy entropy | reported |
 | **FS** (Fukuyama–Sugeno) | Compactness minus scatter | reported |
