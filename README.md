@@ -6,6 +6,9 @@ multi-layer soil-property rasters and point observations using Fuzzy C-Means
 
 ![Management zone map](outputs/mz_zone_map.png)
 
+> For a detailed walkthrough of the methodology and results, see the Medium article:
+> [Delineating Agricultural Management Zones with Fuzzy C-Means](https://medium.com/@cmcarbajal/delineating-agricultural-management-zones-with-fuzzy-c-means-7bdc9ca537c7)
+
 ---
 
 ## Overview
