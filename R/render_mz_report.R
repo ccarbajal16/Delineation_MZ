@@ -88,6 +88,15 @@ render_mz_report <- function(
   }
 
   # ---- Check Quarto CLI is available --------------------------------------
+  # Resolve the absolute path via Sys.which() so the call works even when
+  # PATH inside the calling R session is sparser than the user's shell
+  # (e.g. Shiny apps launched from a launcher that scrubs PATH).
+  if (!file.exists(quarto_bin)) {
+    resolved <- Sys.which("quarto")
+    if (nzchar(resolved) && file.exists(resolved)) {
+      quarto_bin <- resolved
+    }
+  }
   quarto_version <- tryCatch(
     system2(quarto_bin, "--version", stdout = TRUE, stderr = FALSE),
     error = function(e) NA_character_
@@ -163,14 +172,23 @@ render_mz_report <- function(
   if (verbose) {
     message("Command: ", quarto_bin, " ",
             paste(args, collapse = " "))
-    result <- system2(quarto_bin, args, stdout = "", stderr = "")
-  } else {
-    result <- system2(quarto_bin, args, stdout = "", stderr = "")
   }
+
+  # Always capture stderr to a temp file so failures are diagnosable even
+  # when the caller asked for quiet output. The file is removed on success.
+  stderr_log <- tempfile(fileext = "_quarto_stderr.log")
+  on.exit(if (file.exists(stderr_log)) file.remove(stderr_log), add = TRUE)
+
+  result <- system2(quarto_bin, args, stdout = "", stderr = stderr_log)
   status <- attr(result, "status")
   if (!is.null(status) && status != 0L) {
+    err_msg <- if (file.exists(stderr_log) && file.size(stderr_log) > 0) {
+      paste(readLines(stderr_log, warn = FALSE), collapse = "\n")
+    } else {
+      "(no stderr captured — re-run with verbose = TRUE for the command)"
+    }
     stop("Quarto render failed with status ", status, ".\n",
-         "Set `verbose = TRUE` to see the full output.")
+         "--- stderr ---\n", err_msg, "\n--- end stderr ---")
   }
 
   rendered <- if (is.null(output_dir)) {

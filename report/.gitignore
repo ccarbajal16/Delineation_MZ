@@ -1,2 +1,6 @@
 /.quarto/
 **/*.quarto_ipynb
+# Quarto render scratch dir. The HTML uses `embed-resources: true`, so
+# the .html is self-contained and the sibling `_files/` dir is not needed.
+mz_report_files/
+

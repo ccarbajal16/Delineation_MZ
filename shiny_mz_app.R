@@ -2513,16 +2513,33 @@ server <- function(input, output, session) {
         }
 
         incProgress(0.5, detail = "Running Quarto CLI")
-        if (!exists("render_mz_report", mode = "function")) {
-          source("R/render_mz_report.R", local = TRUE)
+
+        # Resolve absolute paths up front so the wrapper does not depend on
+        # CWD. The wrapper is sourced to the GLOBAL env so the function is
+        # reliably found on the next line (sourcing with local = TRUE inside
+        # withProgress can drop the binding in some Shiny versions).
+        project_root <- normalizePath(getwd(), mustWork = TRUE)
+        qmd_path  <- file.path(project_root, "report", "mz_report.qmd")
+        wrap_path <- file.path(project_root, "R", "render_mz_report.R")
+        out_html_path <- file.path(project_root, "report", "mz_report.html")
+
+        if (!file.exists(qmd_path)) {
+          stop("mz_report.qmd not found at ", qmd_path)
+        }
+        if (!file.exists(wrap_path)) {
+          stop("R/render_mz_report.R not found at ", wrap_path)
         }
 
-        project_root <- normalizePath(getwd(), mustWork = TRUE)
-        qmd_path <- file.path(project_root, "report", "mz_report.qmd")
-        if (!file.exists(qmd_path)) {
-          stop("mz_report.qmd not found at ", qmd_path,
-               " — the Quarto report source must live under <project>/report/.")
+        # Capture pre-render mtime so we can verify the file was actually
+        # updated afterwards.
+        html_mtime_before <- if (file.exists(out_html_path)) {
+          file.info(out_html_path)$mtime
+        } else {
+          NA
         }
+
+        source(wrap_path, local = FALSE)
+        mzlog("REPORT: wrapper sourced from ", wrap_path)
 
         out_html <- render_mz_report(
           outputs_dir          = "outputs",
@@ -2538,17 +2555,35 @@ server <- function(input, output, session) {
           verbose              = FALSE
         )
 
+        incProgress(0.9, detail = "Verifying output")
+        if (!file.exists(out_html)) {
+          stop("Render reported success but output file is missing: ", out_html)
+        }
+        html_mtime_after <- file.info(out_html)$mtime
+        if (!is.na(html_mtime_before) &&
+            !is.na(html_mtime_after) &&
+            html_mtime_after <= html_mtime_before) {
+          stop("Render finished but the HTML mtime did not change ",
+               "(before=", format(html_mtime_before), ", after=",
+               format(html_mtime_after), "). Check that Quarto wrote to ",
+               out_html, " and that no read-only file is in the way.")
+        }
+        size_kb <- round(file.info(out_html)$size / 1024, 1)
+        mzlog("REPORT: rendered ", out_html,
+              " | size=", size_kb, " KB",
+              " | mtime=", format(html_mtime_after))
+
         incProgress(1.0, detail = "Done")
-        mzlog("REPORT: rendered ", out_html)
         showNotification(
-          paste0("HTML report rendered → ", out_html),
+          paste0("HTML report rendered → ", out_html,
+                 "  (", size_kb, " KB)"),
           type = "message", duration = 6
         )
       }, error = function(e) {
         mzlog("REPORT: error — ", conditionMessage(e))
         showNotification(
           paste0("Report rendering failed: ", conditionMessage(e)),
-          type = "error", duration = 12
+          type = "error", duration = 15
         )
       })
     })
