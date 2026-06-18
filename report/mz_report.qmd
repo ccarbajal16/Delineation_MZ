@@ -106,6 +106,24 @@ if (length(missing) > 0) {
 
 ```{r exec-summary-load}
 validation <- read.csv(file.path(OUT, "mz_validation.csv"))
+
+# The Shiny app's export handler writes mz_validation.csv WITHOUT the
+# `*_rank` columns (it just dumps rv$validation_df to disk), while the
+# batch script adds XB_rank / FPI_rank / NCE_rank / consensus_rank
+# before writing. Compute them here if missing so the report is
+# robust to either source.
+if (!"consensus_rank" %in% names(validation)) {
+  for (idx in c("XB", "FPI", "NCE")) {
+    rk_col <- paste0(idx, "_rank")
+    if (!rk_col %in% names(validation)) {
+      validation[[rk_col]] <- rank(validation[[idx]], ties.method = "min")
+    }
+  }
+  validation$consensus_rank <- validation$XB_rank +
+    validation$FPI_rank + validation$NCE_rank
+  cat("Note: mz_validation.csv had no rank columns; computed on the fly.\n")
+}
+
 opt_k <- validation$k[which.min(validation$consensus_rank)]
 n_soil_vars <- length(SOIL_VARS)
 
@@ -468,42 +486,60 @@ defined by a hard threshold (Section 5.2) lose the gradient information.
 
 memb_files <- list.files(OUT, pattern = "^mz_membership_z[0-9]+\\.tif$",
                          full.names = TRUE)
-memb_stack <- rast(memb_files)
-memb_vals <- values(memb_stack, mat = TRUE)
-memb_vals <- pmax(memb_vals, .Machine$double.xmin)
-memb_vals <- memb_vals / rowSums(memb_vals)  # renormalize (defensive)
-entropy_vec <- -rowSums(memb_vals * log(memb_vals))
 
-entropy_rast <- memb_stack[[1]]
-values(entropy_rast) <- entropy_vec
-if (!is.null(boundary)) {
-  entropy_rast <- mask(entropy_rast, vect(boundary))
+# Per-zone membership TIFs are written by the standalone pipeline and (now)
+# by the Shiny app's Generate Report handler. If they are absent we skip
+# the uncertainty section with a notice rather than abort the render.
+has_membership <- length(memb_files) > 0L
+entropy_df <- NULL
+entropy_summary <- NULL
+
+if (has_membership) {
+  memb_stack <- rast(memb_files)
+  memb_vals <- values(memb_stack, mat = TRUE)
+  memb_vals <- pmax(memb_vals, .Machine$double.xmin)
+  memb_vals <- memb_vals / rowSums(memb_vals)  # renormalize (defensive)
+  entropy_vec <- -rowSums(memb_vals * log(memb_vals))
+
+  entropy_rast <- memb_stack[[1]]
+  values(entropy_rast) <- entropy_vec
+  if (!is.null(boundary)) {
+    entropy_rast <- mask(entropy_rast, vect(boundary))
+  }
+  entropy_df <- as.data.frame(entropy_rast, xy = TRUE)
+  names(entropy_df) <- c("x", "y", "Entropy")
+
+  entropy_summary <- data.frame(
+    Statistic = c("Min", "1st quartile", "Median", "Mean",
+                  "3rd quartile", "Max", "log(k) ceiling"),
+    Value     = round(c(quantile(entropy_vec, c(0, 0.25, 0.5, 0.5, 0.75, 1),
+                                na.rm = TRUE)[c(1, 2, 3, 5)],
+                        mean(entropy_vec, na.rm = TRUE),
+                        max(entropy_vec, na.rm = TRUE),
+                        log(n_zones)), 4),
+    stringsAsFactors = FALSE
+  )
+} else {
+  cat("Per-zone membership TIFs (mz_membership_z*.tif) are not on disk; ",
+      "skipping the uncertainty map. Run delineation_management_zones.R ",
+      "or click Generate Report in the Shiny app to populate them.\n")
 }
-entropy_df <- as.data.frame(entropy_rast, xy = TRUE)
-names(entropy_df) <- c("x", "y", "Entropy")
-
-entropy_summary <- data.frame(
-  Statistic = c("Min", "1st quartile", "Median", "Mean",
-                "3rd quartile", "Max", "log(k) ceiling"),
-  Value     = round(c(quantile(entropy_vec, c(0, 0.25, 0.5, 0.5, 0.75, 1),
-                              na.rm = TRUE)[c(1, 2, 3, 5)],
-                      mean(entropy_vec, na.rm = TRUE),
-                      max(entropy_vec, na.rm = TRUE),
-                      log(n_zones)), 4),
-  stringsAsFactors = FALSE
-)
 ```
 
 ```{r entropy-stats}
 #| tbl-cap: "Entropy distribution"
-kable(entropy_summary, align = "lr")
+if (is.null(entropy_summary)) {
+  cat("No entropy data — see note in section 8.\n")
+} else {
+  kable(entropy_summary, align = "lr")
+}
 ```
 
 ```{r entropy-plot}
 #| fig-width: 7
 #| fig-height: 7
 
-if (nrow(entropy_df) > 0) {
+if (!is.null(entropy_df) && nrow(entropy_df) > 0) {
   ggplot(entropy_df, aes(x, y, fill = Entropy)) +
     geom_raster() +
     scale_fill_viridis_c(option = "inferno", name = "Entropy") +

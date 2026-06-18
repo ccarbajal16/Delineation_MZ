@@ -135,7 +135,17 @@ runValidation <- function(pca_scores, k_range = 2:6, m = 2) {
       NCE = nce_index(U)
     )
   })
-  do.call(rbind, results)
+  validation <- do.call(rbind, results)
+  # Add the *_rank columns and consensus_rank, matching what the standalone
+  # script's evaluate_k() writes. Without these, the Validation CSV that the
+  # Export button writes is missing the columns the Quarto report expects
+  # (consensus_rank, used in section 5's validity table).
+  validation$XB_rank <- rank(validation$XB, ties.method = "min")
+  validation$FPI_rank <- rank(validation$FPI, ties.method = "min")
+  validation$NCE_rank <- rank(validation$NCE, ties.method = "min")
+  validation$consensus_rank <- validation$XB_rank +
+    validation$FPI_rank + validation$NCE_rank
+  validation
 }
 
 selectOptimalK <- function(df, method = "consensus") {
@@ -2452,6 +2462,22 @@ server <- function(input, output, session) {
         # 5. Hard zone map
         terra::writeRaster(rv$zone_hard, "outputs/mz_zone_map.tif",
                            overwrite = TRUE, datatype = "INT1U", NAflag = 255)
+
+        # 5a. Per-zone membership rasters. The Quarto report's uncertainty
+        #     section (Shannon entropy) reads mz_membership_z*.tif. The
+        #     standalone batch script writes these from the kriging output;
+        #     the Shiny app previously did not. Persist them now so the
+        #     report has everything it needs without the user having to
+        #     re-run the batch pipeline.
+        if (!is.null(rv$zone_stack)) {
+          k_layers <- terra::nlyr(rv$zone_stack)
+          for (j in seq_len(k_layers)) {
+            terra::writeRaster(rv$zone_stack[[j]],
+                               sprintf("outputs/mz_membership_z%d.tif", j),
+                               overwrite = TRUE, datatype = "FLT4S",
+                               NAflag = -9999)
+          }
+        }
 
         # 5b. PNG figure of the zone map (300 DPI, with legend)
         png_path <- "outputs/mz_zone_map.png"
