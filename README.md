@@ -33,6 +33,11 @@ are written as reproducible GeoTIFF, CSV, and PNG artifacts.
 Delineation_MZ/
 ├── delineation_management_zones.R   # Batch / command-line script
 ├── shiny_mz_app.R                   # Interactive Shiny app
+├── R/                               # Reusable R helpers
+│   └── render_mz_report.R           # Wrapper that calls the Quarto CLI
+├── report/
+│   ├── mz_report.qmd                # Quarto source for the results report
+│   └── mz_report.html               # Pre-rendered HTML report (regenerate to refresh)
 ├── www/                             # App static assets (logo, User Guide figures)
 │   ├── mz_logo.svg
 │   └── assets/figures/              # Diagrams + sample outputs shown in the guide
@@ -63,6 +68,11 @@ install.packages("ggrepel")
 | `e1071` | Fuzzy C-Means via `cmeans()` |
 | `gstat` | Ordinary kriging and IDW interpolation |
 | `ggplot2` / `patchwork` | Validation and zone map figures |
+| `effectsize` | η² effect size for the per-variable ANOVA table (optional, report only) |
+
+The **report** layer also needs the [Quarto CLI](https://quarto.org/docs/get-started/)
+(`>= 1.3`) on your `PATH`. The R `quarto` package is **not** required; the wrapper
+shells out to the CLI directly.
 
 The **Shiny app** needs a few more packages on top of the above — see
 [Interactive Shiny app](#interactive-shiny-app) for the full install line.
@@ -143,7 +153,7 @@ names, and choose how point coordinates are interpreted (**auto-detect**,
 | 3 | **Clustering** | Accept the optimal k or override it, then **Run FCM Clustering** to get hard zone assignments per point. |
 | 4 | **Zone Maps** | Membership surfaces are kriged and the hard zone map is built automatically (large rasters are downsampled so the UI stays responsive). Use **Regenerate** to recompute. |
 | 5 | **Statistics** | Per-zone mean soil properties, one-way ANOVA per variable, and a comparison plot. |
-| 6 | **Export** | Download the results (see below). |
+| 6 | **Export** | Download the results (CSVs, GeoTIFF, PNG, and the HTML report). |
 
 ### Try it with the bundled demo
 
@@ -153,17 +163,23 @@ reproduce the **k = 5** solution shown in this README.
 
 ### Exports
 
-The **Export** tab streams files straight to your browser's download folder
-(nothing is written to the server), matching the batch script's output names:
+The **Export** tab writes the artifacts to the project's `outputs/` folder
+(matching the layout the batch script uses). A confirmation notification
+shows the path of each saved file. Filenames match the batch script:
 
 | Button | File |
 |--------|------|
-| Validation CSV | `mz_validation.csv` |
-| Zone statistics CSV | `mz_zone_stats.csv` |
-| Point assignments CSV | `mz_point_assignments.csv` |
-| ANOVA results CSV | `mz_anova.csv` |
-| Zones GeoTIFF | `mz_zone_map.tif` (INT1U, CRS preserved) |
-| Zone map PNG | `mz_zone_map.png` (300 DPI, with legend) |
+| Validation CSV | `outputs/mz_validation.csv` |
+| Zone statistics CSV | `outputs/mz_zone_stats.csv` |
+| Point assignments CSV | `outputs/mz_point_assignments.csv` |
+| ANOVA results CSV | `outputs/mz_anova.csv` |
+| Zones GeoTIFF | `outputs/mz_zones.tif` (INT1U, CRS preserved) |
+| Zone map PNG | `outputs/mz_zone_map.png` (300 DPI, with legend) |
+| **Generate Report** | `report/mz_report.html` — see [Generating a report](#generating-a-report) |
+
+The `outputs/` folder is created on first export. The **Generate Report** button
+also writes the missing CSVs, PNGs, and the transition mask to `outputs/` so
+the Quarto report has everything it needs.
 
 ### Troubleshooting
 
@@ -173,6 +189,66 @@ The **Export** tab streams files straight to your browser's download folder
   field-scale raster). Larger rasters are downsampled internally; it will not hang.
 - **A diagnostic log** is written to `mz_debug.log` next to the script. Set
   `MZ_DEBUG <- FALSE` near the top to silence it.
+
+---
+
+## Generating a report
+
+[`report/mz_report.qmd`](report/mz_report.qmd) is a self-contained **Quarto** document
+that turns the contents of `outputs/` into a publication-style report: executive
+summary, input metadata, PCA variance, cluster-validity table and figure, the final
+zone map, per-zone statistics with η² effect sizes, a membership-entropy uncertainty
+map, and a reproducibility section with the exact pipeline parameters and
+`sessionInfo()`.
+
+A pre-rendered copy lives at `report/mz_report.html` so you can preview the result
+without re-running anything. To regenerate it from R:
+
+```r
+source("R/render_mz_report.R")
+render_mz_report()  # default: HTML, study area = "Study Area"
+```
+
+You can also click **Generate Report** in the Shiny app's **Export** tab (Step 6).
+The handler writes the missing outputs (CSVs, zone map, validation index plot,
+transition mask) to `outputs/` and renders the report in one go — the resulting
+`report/mz_report.html` is then ready to download.
+
+Or pass your own metadata:
+
+```r
+render_mz_report(
+  author          = "C. Carbajal",
+  study_area_name = "INIA Test Field",
+  output_dir      = "outputs"  # write alongside the data products
+)
+```
+
+Or from the shell (anywhere on the path):
+
+```bash
+quarto render report/mz_report.qmd --to html \
+  -P author:"C. Carbajal" \
+  -P study_area_name:"INIA Test Field"
+```
+
+The report is **read-only** with respect to the pipeline — it never re-runs the
+analysis, it just consumes the artifacts in `outputs/`. If you tweak the pipeline
+parameters (k, m, PCA threshold, interpolation method), regenerate the outputs with
+`delineation_management_zones.R` (or the Shiny app) and re-render the report.
+
+### Report sections
+
+1. **Executive summary** — auto-derived from the outputs (k, cell count, transition %).
+2. **Inputs** — metadata table + boundary map.
+3. **Pre-processing** — extraction, median imputation, min–max normalization.
+4. **PCA** — scree plot + variance table.
+5. **Cluster-validity analysis** — XB / FPI / NCE / PE / FS + consensus rank.
+6. **Final FCM and zone map** — figure + per-zone point counts + transition stats.
+7. **Zone statistics** — per-zone means and a per-variable ANOVA with η² (via
+   `effectsize::eta_squared`).
+8. **Uncertainty map** — Shannon entropy of the membership vector at each cell.
+9. **Reproducibility** — pipeline parameters + R session info.
 
 ---
 
@@ -339,6 +415,7 @@ variation in soil properties.
 | `mz_validation_all_indices.png` | PNG | Scaled validity indices vs k |
 | `mz_zone_map.png` | PNG | Rendered hard zone map |
 | `mz_pca_scores_by_zone.png` | PNG | PCA biplot coloured by zone |
+| `report/mz_report.html` | HTML | Self-contained Quarto report (regenerate via `R/render_mz_report.R`) |
 
 ---
 
