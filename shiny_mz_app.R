@@ -971,14 +971,18 @@ ui <- fluidPage(
               ),
               div(class = "card-body",
                 div(style = "display: flex; flex-direction: column; gap: 12px;",
-                  actionButton("btn_export_validation", "Download Validation CSV",
-                               icon("download"), style = "background:#2c3e50; color:white; width:100%;"),
-                  actionButton("btn_export_zone_stats", "Download Zone Statistics CSV",
-                               icon("download"), style = "background:#2c3e50; color:white; width:100%;"),
-                  actionButton("btn_export_assignments", "Download Point Assignments CSV",
-                               icon("download"), style = "background:#2c3e50; color:white; width:100%;"),
-                  actionButton("btn_export_anova", "Download ANOVA Results CSV",
-                               icon("download"), style = "background:#2c3e50; color:white; width:100%;")
+                  downloadButton("dl_export_validation", "Download Validation CSV",
+                                 icon = icon("download"),
+                                 style = "background:#2c3e50; color:white; width:100%;"),
+                  downloadButton("dl_export_zone_stats", "Download Zone Statistics CSV",
+                                 icon = icon("download"),
+                                 style = "background:#2c3e50; color:white; width:100%;"),
+                  downloadButton("dl_export_assignments", "Download Point Assignments CSV",
+                                 icon = icon("download"),
+                                 style = "background:#2c3e50; color:white; width:100%;"),
+                  downloadButton("dl_export_anova", "Download ANOVA Results CSV",
+                                 icon = icon("download"),
+                                 style = "background:#2c3e50; color:white; width:100%;")
                 )
               )
             ),
@@ -988,10 +992,12 @@ ui <- fluidPage(
               ),
               div(class = "card-body",
                 div(style = "display: flex; flex-direction: column; gap: 12px;",
-                  actionButton("btn_export_zone_tif", "Download Zones GeoTIFF (.tif)",
-                               icon("layer-group"), style = "background:#16a085; color:white; width:100%;"),
-                  actionButton("btn_export_zone_png", "Download Zone Map PNG (300 DPI)",
-                               icon("image"), style = "background:#16a085; color:white; width:100%;"),
+                  downloadButton("dl_export_zone_tif", "Download Zones GeoTIFF (.tif)",
+                                 icon = icon("layer-group"),
+                                 style = "background:#16a085; color:white; width:100%;"),
+                  downloadButton("dl_export_zone_png", "Download Zone Map PNG (300 DPI)",
+                                 icon = icon("image"),
+                                 style = "background:#16a085; color:white; width:100%;"),
                   div(style = "font-size:12px; color:#7f8c8d;",
                       "GeoTIFF keeps the CRS for GIS; PNG is a 300-DPI publication figure.")
                 )
@@ -1027,12 +1033,13 @@ ui <- fluidPage(
                     textInput("report_study_area", NULL, value = "Study Area",
                               placeholder = "e.g. INIA Test Field")
                 ),
-                actionButton("btn_export_report", "Generate Report",
-                             icon("file-alt"),
-                             style = "background:#2980b9; color:white; width:100%; margin-top:6px;"),
+                downloadButton("dl_export_report", "Generate Report",
+                               icon = icon("file-alt"),
+                               style = "background:#2980b9; color:white; width:100%; margin-top:6px;"),
                 div(style = "font-size:11px; color:#95a5a6; margin-top:6px;",
-                    "Requires Quarto CLI on PATH; the Shiny app will pause while ",
-                    "the report is rendered (~3 s for the bundled data).")
+                    "Renders report/mz_report.qmd on demand and downloads the HTML. ",
+                    "Intermediate outputs go to a temp dir, not your project folder. ",
+                    "Requires Quarto CLI on PATH (~3 s for the bundled data).")
               )
             ),
             div(class = "card",
@@ -2273,80 +2280,83 @@ server <- function(input, output, session) {
   outputOptions(output, "table_anova",        suspendWhenHidden = FALSE)
 
   # ── Export ─────────────────────────────────────────────────────────────────
-  observeEvent(input$btn_export_validation, {
-    req(rv$validation_df)
-    write.csv(rv$validation_df, "mz_validation.csv", row.names = FALSE)
-    showNotification("Validation CSV saved.", type = "message")
-  })
+  # All exports go through downloadHandler so the browser handles the
+  # "save where?" dialog (Downloads folder by default; OS-native Save As if
+  # the user changes the browser settings). The app no longer writes to the
+  # project directory, so nothing pollutes the working tree.
 
-  observeEvent(input$btn_export_zone_stats, {
-    req(rv$fcm_result, rv$df_vars)
-    df_stats <- cbind(rv$df_vars, Zone = rv$fcm_result$cluster_id)
-    zone_means <- aggregate(. ~ Zone, data = df_stats, FUN = mean)
-    write.csv(zone_means, "mz_zone_stats.csv", row.names = FALSE)
-    showNotification("Zone statistics CSV saved.", type = "message")
-  })
+  output$dl_export_validation <- downloadHandler(
+    filename = function() "mz_validation.csv",
+    content = function(file) {
+      req(rv$validation_df)
+      write.csv(rv$validation_df, file, row.names = FALSE)
+    }
+  )
 
-  observeEvent(input$btn_export_assignments, {
-    req(rv$obs_sf)
-    if (!"fid" %in% names(rv$obs_sf)) rv$obs_sf$fid <- seq_len(nrow(rv$obs_sf))
-    sel <- intersect(c("fid", "Zone"), names(rv$obs_sf))
-    assign_df <- as.data.frame(st_drop_geometry(rv$obs_sf[, sel]))
-    write.csv(assign_df, "mz_point_assignments.csv", row.names = FALSE)
-    showNotification("Point assignments CSV saved.", type = "message")
-  })
+  output$dl_export_zone_stats <- downloadHandler(
+    filename = function() "mz_zone_stats.csv",
+    content = function(file) {
+      req(rv$fcm_result, rv$df_vars)
+      df_stats <- cbind(rv$df_vars, Zone = rv$fcm_result$cluster_id)
+      zone_means <- aggregate(. ~ Zone, data = df_stats, FUN = mean)
+      write.csv(zone_means, file, row.names = FALSE)
+    }
+  )
 
-  observeEvent(input$btn_export_anova, {
-    req(rv$fcm_result, rv$df_vars, rv$soil_vars)
-    df_stats <- cbind(rv$df_vars, Zone = rv$fcm_result$cluster_id)
-    anova_res <- lapply(rv$soil_vars, function(v) {
-      aov_out <- summary(aov(as.formula(paste(v, "~ Zone")), data = df_stats))[[1]]
-      aov_out$"Pr(>F)"[1]
-    })
-    anova_df <- data.frame(Variable = rv$soil_vars, `p-value` = unlist(anova_res))
-    write.csv(anova_df, "mz_anova.csv", row.names = FALSE)
-    showNotification("ANOVA CSV saved.", type = "message")
-  })
+  output$dl_export_assignments <- downloadHandler(
+    filename = function() "mz_point_assignments.csv",
+    content = function(file) {
+      req(rv$obs_sf)
+      pa <- rv$obs_sf
+      if (!"fid" %in% names(pa)) pa$fid <- seq_len(nrow(pa))
+      sel <- intersect(c("fid", "Zone"), names(pa))
+      assign_df <- as.data.frame(st_drop_geometry(pa[, sel]))
+      write.csv(assign_df, file, row.names = FALSE)
+    }
+  )
+
+  output$dl_export_anova <- downloadHandler(
+    filename = function() "mz_anova.csv",
+    content = function(file) {
+      req(rv$fcm_result, rv$df_vars, rv$soil_vars)
+      df_stats <- cbind(rv$df_vars, Zone = rv$fcm_result$cluster_id)
+      anova_res <- lapply(rv$soil_vars, function(v) {
+        summary(aov(as.formula(paste(v, "~ Zone")), data = df_stats))[[1]]$"Pr(>F)"[1]
+      })
+      anova_df <- data.frame(Variable = rv$soil_vars, `p-value` = unlist(anova_res))
+      write.csv(anova_df, file, row.names = FALSE)
+    }
+  )
 
   # ── Map exports ──────────────────────────────────────────────────────────────
   # Both reuse rv$zone_hard, the full-resolution hard-zone raster cached by
-  # zoneMap() (Part 4).  req() keeps the handler inert until the zone map exists,
-  # and any failure surfaces as an on-screen error notification rather than a
-  # silent crash — same defensive style as the rest of the app.
+  # zoneMap() (Part 4). req() keeps the handler inert until the zone map exists,
+  # and any failure surfaces as a download error rather than a silent crash.
 
   # GeoTIFF — full-resolution integer zone raster, CRS preserved for GIS.
-  observeEvent(input$btn_export_zone_tif, {
-    if (is.null(rv$zone_hard)) {
-      showNotification("Generate the zone map (Step 4) before exporting the GeoTIFF.",
-                       type = "warning", duration = 6)
-      return(invisible(NULL))
-    }
-    tryCatch({
-      out <- "mz_zones.tif"
-      terra::writeRaster(rv$zone_hard, out, overwrite = TRUE,
+  output$dl_export_zone_tif <- downloadHandler(
+    filename = function() "mz_zones.tif",
+    content = function(file) {
+      if (is.null(rv$zone_hard)) {
+        stop("Generate the zone map (Step 4) before exporting the GeoTIFF.")
+      }
+      terra::writeRaster(rv$zone_hard, file, overwrite = TRUE,
                          datatype = "INT1U", NAflag = 255)
-      mzlog("EXPORT: wrote GeoTIFF ", out, " | cells=", terra::ncell(rv$zone_hard))
-      showNotification(paste0("Zones GeoTIFF saved → ", out), type = "message",
-                       duration = 5)
-    }, error = function(e) {
-      mzlog("EXPORT: GeoTIFF error — ", conditionMessage(e))
-      showNotification(paste0("GeoTIFF export failed: ", conditionMessage(e)),
-                       type = "error", duration = 10)
-    })
-  })
+      mzlog("EXPORT: wrote GeoTIFF to download | cells=",
+            terra::ncell(rv$zone_hard))
+    }
+  )
 
   # PNG — 300-DPI publication figure of the hard-zone map, with a zone legend.
-  observeEvent(input$btn_export_zone_png, {
-    if (is.null(rv$zone_hard)) {
-      showNotification("Generate the zone map (Step 4) before exporting the PNG.",
-                       type = "warning", duration = 6)
-      return(invisible(NULL))
-    }
-    tryCatch({
-      out  <- "mz_zone_map.png"
+  output$dl_export_zone_png <- downloadHandler(
+    filename = function() "mz_zone_map.png",
+    content = function(file) {
+      if (is.null(rv$zone_hard)) {
+        stop("Generate the zone map (Step 4) before exporting the PNG.")
+      }
       k    <- rv$k_final
       cols <- zoneColors(k)
-      grDevices::png(out, width = 8, height = 6, units = "in", res = 300)
+      grDevices::png(file, width = 8, height = 6, units = "in", res = 300)
       on.exit(grDevices::dev.off(), add = TRUE)
       # No col= : rv$zone_hard carries the value->colour table (coltab) set by
       # asCategoricalZones(), so each zone id draws in its fixed colour.  The
@@ -2357,193 +2367,171 @@ server <- function(input, output, session) {
                   axes = FALSE, box = FALSE, legend = FALSE)
       graphics::legend("topright", legend = paste0("Zone ", seq_len(k)),
                        fill = cols, border = NA, bty = "n", cex = 0.9)
-      mzlog("EXPORT: wrote PNG ", out, " @300dpi | k=", k)
-      showNotification(paste0("Zone map PNG (300 DPI) saved → ", out),
-                       type = "message", duration = 5)
-    }, error = function(e) {
-      mzlog("EXPORT: PNG error — ", conditionMessage(e))
-      showNotification(paste0("PNG export failed: ", conditionMessage(e)),
-                       type = "error", duration = 10)
-    })
-  })
+      mzlog("EXPORT: wrote PNG to download @300dpi | k=", k)
+    }
+  )
 
   # ── HTML report ─────────────────────────────────────────────────────────────
-  # Self-contained: writes everything the Quarto report expects to outputs/
-  # (including the transition mask the rest of the app does not persist),
-  # then calls R/render_mz_report.R to render report/mz_report.qmd to HTML.
-  # Mirrors the standalone batch pipeline's output layout (data in outputs/,
-  # qmd in report/), so the same report works from either entry point.
-  observeEvent(input$btn_export_report, {
-    # All of these are produced by the previous steps; the report needs them
-    # on disk in outputs/ before it can render.
-    need <- list(
-      validation_df = rv$validation_df,
-      fcm_result    = rv$fcm_result,
-      df_vars       = rv$df_vars,
-      obs_sf        = rv$obs_sf,
-      zone_hard     = rv$zone_hard,
-      soil_vars     = rv$soil_vars
-    )
-    missing_keys <- names(need)[vapply(need, is.null, logical(1))]
-    if (length(missing_keys) > 0) {
-      showNotification(
-        paste0("Cannot generate report: run steps 1–4 first (missing: ",
-               paste(missing_keys, collapse = ", "), ")."),
-        type = "warning", duration = 8
+  # Renders the Quarto report on demand and streams the HTML to the browser
+  # via downloadHandler. Intermediate outputs (CSVs, PNGs, transition mask)
+  # go to a per-call tempdir so the user's project directory stays clean.
+  output$dl_export_report <- downloadHandler(
+    filename = function() "mz_report.html",
+    content = function(file) {
+      # All of these are produced by the previous steps; the report needs them
+      # on disk before it can render.
+      need <- list(
+        validation_df = rv$validation_df,
+        fcm_result    = rv$fcm_result,
+        df_vars       = rv$df_vars,
+        obs_sf        = rv$obs_sf,
+        zone_hard     = rv$zone_hard,
+        soil_vars     = rv$soil_vars
       )
-      return(invisible(NULL))
-    }
+      missing_keys <- names(need)[vapply(need, is.null, logical(1))]
+      if (length(missing_keys) > 0) {
+        stop("Cannot generate report: run steps 1-4 first (missing: ",
+             paste(missing_keys, collapse = ", "), ").")
+      }
 
-    withProgress(message = "Rendering HTML report…", value = 0, {
-      tryCatch({
-        incProgress(0.1, detail = "Writing outputs/")
-        if (!dir.exists("outputs")) dir.create("outputs", recursive = TRUE)
+      # Per-call tempdir for intermediate outputs + the rendered HTML.
+      tmp <- tempfile(fileext = "_mz_outputs")
+      dir.create(tmp)
+      on.exit(unlink(tmp, recursive = TRUE), add = TRUE)
 
-        # 1. Validation table (already in memory)
-        write.csv(rv$validation_df, "outputs/mz_validation.csv",
-                  row.names = FALSE)
+      # 1. Validation table
+      write.csv(rv$validation_df, file.path(tmp, "mz_validation.csv"),
+                row.names = FALSE)
 
-        # 2. Per-zone means
-        df_stats  <- cbind(rv$df_vars, Zone = rv$fcm_result$cluster_id)
-        zone_means <- aggregate(. ~ Zone, data = df_stats, FUN = mean)
-        write.csv(zone_means, "outputs/mz_zone_stats.csv", row.names = FALSE)
+      # 2. Per-zone means
+      df_stats   <- cbind(rv$df_vars, Zone = rv$fcm_result$cluster_id)
+      zone_means <- aggregate(. ~ Zone, data = df_stats, FUN = mean)
+      write.csv(zone_means, file.path(tmp, "mz_zone_stats.csv"),
+                row.names = FALSE)
 
-        # 3. ANOVA (p-values only — the .qmd recomputes η² from raw data)
-        anova_res <- lapply(rv$soil_vars, function(v) {
-          summary(aov(as.formula(paste(v, "~ Zone")), data = df_stats))[[1]]$"Pr(>F)"[1]
-        })
-        write.csv(data.frame(variable = rv$soil_vars,
-                             p_value  = unlist(anova_res)),
-                  "outputs/mz_anova.csv", row.names = FALSE)
-
-        # 4. Point assignments (rich: fid, lon, lat, Zone, memberships)
-        pa <- rv$obs_sf
-        if (!"fid" %in% names(pa)) pa$fid <- seq_len(nrow(pa))
-        coords <- st_coordinates(pa)
-        pa_tbl <- data.frame(
-          fid       = pa$fid,
-          longitude = coords[, 1],
-          latitude  = coords[, 2],
-          Zone      = rv$fcm_result$cluster_id,
-          round(as.data.frame(rv$fcm_result$membership), 6)
-        )
-        names(pa_tbl)[6:ncol(pa_tbl)] <- paste0("membership_z", seq_len(ncol(rv$fcm_result$membership)))
-        write.csv(pa_tbl, "outputs/mz_point_assignments.csv", row.names = FALSE)
-
-        # 5. Hard zone map (already produced by btn_export_zone_tif; re-emit
-        #    into outputs/ so the report can find it without depending on
-        #    the user having clicked that button first).
-        terra::writeRaster(rv$zone_hard, "outputs/mz_zone_map.tif",
-                           overwrite = TRUE, datatype = "INT1U", NAflag = 255)
-
-        # 5b. PNG figure of the zone map (300 DPI, with legend). The Shiny app
-        #     exposes this via btn_export_zone_png, but we don't want the
-        #     report to depend on the user having clicked that button first.
-        png_path <- "outputs/mz_zone_map.png"
-        k        <- rv$k_final
-        cols     <- zoneColors(k)
-        grDevices::png(png_path, width = 8, height = 6, units = "in", res = 300)
-        on.exit(grDevices::dev.off(), add = TRUE)
-        terra::plot(rv$zone_hard,
-                    main = paste0("Management Zone Map  (k = ", k,
-                                  ", Fuzzy C-Means, m = ",
-                                  isolate(input$fcm_m), ")"),
-                    axes = FALSE, box = FALSE, legend = FALSE)
-        graphics::legend("topright",
-                         legend = paste0("Zone ", seq_len(k)),
-                         fill = cols, border = NA, bty = "n", cex = 0.9)
-
-        # 5c. Validation index plot (mirrors save_validation_plot in the
-        #     standalone script). Scaled to [0, 1] so all five indices share
-        #     a y-axis. Lower is better for all of them.
-        vi_path <- "outputs/mz_validation_all_indices.png"
-        scale01 <- function(x) {
-          rng <- max(x, na.rm = TRUE) - min(x, na.rm = TRUE)
-          if (!is.finite(rng) || rng == 0) return(rep(0.5, length(x)))
-          (x - min(x, na.rm = TRUE)) / rng
-        }
-        vplot_df <- rbind(
-          data.frame(k = rv$validation_df$k, index = "XB",
-                     value = scale01(rv$validation_df$XB)),
-          data.frame(k = rv$validation_df$k, index = "FPI",
-                     value = scale01(rv$validation_df$FPI)),
-          data.frame(k = rv$validation_df$k, index = "NCE",
-                     value = scale01(rv$validation_df$NCE)),
-          data.frame(k = rv$validation_df$k, index = "PE",
-                     value = scale01(rv$validation_df$PE)),
-          data.frame(k = rv$validation_df$k, index = "FS",
-                     value = scale01(rv$validation_df$FS))
-        )
-        vplot <- ggplot2::ggplot(vplot_df, ggplot2::aes(k, value, color = index)) +
-          ggplot2::geom_line(linewidth = 0.8) +
-          ggplot2::geom_point(size = 2) +
-          ggplot2::scale_x_continuous(breaks = rv$validation_df$k) +
-          ggplot2::labs(x = "Number of zones (k)",
-                        y = "Scaled index value (lower = better)",
-                        color = "Index",
-                        title = "Cluster-validity indices") +
-          ggplot2::theme_minimal(base_size = 12)
-        ggplot2::ggsave(vi_path, vplot, width = 7, height = 4.5, dpi = 300)
-
-        # 6. Transition mask — the standalone script writes this, the app
-        #    does not. Compute from rv$zone_stack (full-res membership stack)
-        #    at the same default 0.60 threshold.
-        if (!is.null(rv$zone_stack)) {
-          trans_thr <- 0.60
-          transition_mask <- terra::app(rv$zone_stack, function(x) {
-            if (all(is.na(x))) return(NA_real_)
-            as.numeric(max(x, na.rm = TRUE) < trans_thr)
-          })
-          names(transition_mask) <- "Transition"
-          terra::writeRaster(transition_mask, "outputs/mz_transition.tif",
-                             overwrite = TRUE, datatype = "INT1U", NAflag = 255)
-        }
-
-        incProgress(0.4, detail = "Running Quarto CLI")
-        # Source the wrapper if it hasn't been sourced (e.g. when the app is
-        # launched via shiny::runApp without the user running the rest of the
-        # project).
-        if (!exists("render_mz_report", mode = "function")) {
-          source("R/render_mz_report.R", local = TRUE)
-        }
-
-        # Resolve the report's qmd path. The .qmd lives at <project>/report/.
-        project_root <- normalizePath(getwd(), mustWork = TRUE)
-        qmd_path <- file.path(project_root, "report", "mz_report.qmd")
-        if (!file.exists(qmd_path)) {
-          stop("mz_report.qmd not found at ", qmd_path,
-               " — the Quarto report source must live under <project>/report/.")
-        }
-
-        out_html <- render_mz_report(
-          outputs_dir          = "outputs",
-          data_dir             = "data",
-          author               = isolate(input$report_author %||% "MZ Analysis"),
-          study_area_name      = isolate(input$report_study_area %||% "Study Area"),
-          k_range              = seq(isolate(input$k_min), isolate(input$k_max)),
-          fuzziness            = isolate(input$fcm_m),
-          pca_threshold        = isolate(input$pca_thresh) / 100,
-          transition_threshold = 0.60,
-          interpolation_method = "kriging",
-          qmd_path             = qmd_path,
-          verbose              = FALSE
-        )
-
-        incProgress(1.0, detail = "Done")
-        mzlog("REPORT: rendered ", out_html)
-        showNotification(
-          paste0("HTML report rendered → ", out_html),
-          type = "message", duration = 6
-        )
-      }, error = function(e) {
-        mzlog("REPORT: error — ", conditionMessage(e))
-        showNotification(
-          paste0("Report rendering failed: ", conditionMessage(e)),
-          type = "error", duration = 12
-        )
+      # 3. ANOVA (p-values only — the .qmd recomputes η² from raw data)
+      anova_res <- lapply(rv$soil_vars, function(v) {
+        summary(aov(as.formula(paste(v, "~ Zone")), data = df_stats))[[1]]$"Pr(>F)"[1]
       })
-    })
-  })
+      write.csv(data.frame(variable = rv$soil_vars,
+                           p_value  = unlist(anova_res)),
+                file.path(tmp, "mz_anova.csv"), row.names = FALSE)
+
+      # 4. Point assignments (rich: fid, lon, lat, Zone, memberships)
+      pa <- rv$obs_sf
+      if (!"fid" %in% names(pa)) pa$fid <- seq_len(nrow(pa))
+      coords <- st_coordinates(pa)
+      pa_tbl <- data.frame(
+        fid       = pa$fid,
+        longitude = coords[, 1],
+        latitude  = coords[, 2],
+        Zone      = rv$fcm_result$cluster_id,
+        round(as.data.frame(rv$fcm_result$membership), 6)
+      )
+      names(pa_tbl)[6:ncol(pa_tbl)] <- paste0("membership_z", seq_len(ncol(rv$fcm_result$membership)))
+      write.csv(pa_tbl, file.path(tmp, "mz_point_assignments.csv"),
+                row.names = FALSE)
+
+      # 5. Hard zone map
+      terra::writeRaster(rv$zone_hard, file.path(tmp, "mz_zone_map.tif"),
+                         overwrite = TRUE, datatype = "INT1U", NAflag = 255)
+
+      # 5b. PNG figure of the zone map (300 DPI, with legend)
+      png_path <- file.path(tmp, "mz_zone_map.png")
+      k        <- rv$k_final
+      cols     <- zoneColors(k)
+      grDevices::png(png_path, width = 8, height = 6, units = "in", res = 300)
+      on.exit(grDevices::dev.off(), add = TRUE)
+      terra::plot(rv$zone_hard,
+                  main = paste0("Management Zone Map  (k = ", k,
+                                ", Fuzzy C-Means, m = ",
+                                isolate(input$fcm_m), ")"),
+                  axes = FALSE, box = FALSE, legend = FALSE)
+      graphics::legend("topright",
+                       legend = paste0("Zone ", seq_len(k)),
+                       fill = cols, border = NA, bty = "n", cex = 0.9)
+
+      # 5c. Validation index plot (mirrors save_validation_plot in the
+      #     standalone script). Scaled to [0, 1] so all five indices share
+      #     a y-axis. Lower is better for all of them.
+      vi_path <- file.path(tmp, "mz_validation_all_indices.png")
+      scale01 <- function(x) {
+        rng <- max(x, na.rm = TRUE) - min(x, na.rm = TRUE)
+        if (!is.finite(rng) || rng == 0) return(rep(0.5, length(x)))
+        (x - min(x, na.rm = TRUE)) / rng
+      }
+      vplot_df <- rbind(
+        data.frame(k = rv$validation_df$k, index = "XB",
+                   value = scale01(rv$validation_df$XB)),
+        data.frame(k = rv$validation_df$k, index = "FPI",
+                   value = scale01(rv$validation_df$FPI)),
+        data.frame(k = rv$validation_df$k, index = "NCE",
+                   value = scale01(rv$validation_df$NCE)),
+        data.frame(k = rv$validation_df$k, index = "PE",
+                   value = scale01(rv$validation_df$PE)),
+        data.frame(k = rv$validation_df$k, index = "FS",
+                   value = scale01(rv$validation_df$FS))
+      )
+      vplot <- ggplot2::ggplot(vplot_df, ggplot2::aes(k, value, color = index)) +
+        ggplot2::geom_line(linewidth = 0.8) +
+        ggplot2::geom_point(size = 2) +
+        ggplot2::scale_x_continuous(breaks = rv$validation_df$k) +
+        ggplot2::labs(x = "Number of zones (k)",
+                      y = "Scaled index value (lower = better)",
+                      color = "Index",
+                      title = "Cluster-validity indices") +
+        ggplot2::theme_minimal(base_size = 12)
+      ggplot2::ggsave(vi_path, vplot, width = 7, height = 4.5, dpi = 300)
+
+      # 6. Transition mask — the standalone script writes this, the app
+      #    does not. Compute from rv$zone_stack (full-res membership stack)
+      #    at the same default 0.60 threshold.
+      if (!is.null(rv$zone_stack)) {
+        trans_thr <- 0.60
+        transition_mask <- terra::app(rv$zone_stack, function(x) {
+          if (all(is.na(x))) return(NA_real_)
+          as.numeric(max(x, na.rm = TRUE) < trans_thr)
+        })
+        names(transition_mask) <- "Transition"
+        terra::writeRaster(transition_mask,
+                           file.path(tmp, "mz_transition.tif"),
+                           overwrite = TRUE, datatype = "INT1U", NAflag = 255)
+      }
+
+      # Source the wrapper if it hasn't been sourced (e.g. when the app is
+      # launched via shiny::runApp without the user running the rest of the
+      # project).
+      if (!exists("render_mz_report", mode = "function")) {
+        source("R/render_mz_report.R", local = TRUE)
+      }
+
+      # Resolve the report's qmd path
+      project_root <- normalizePath(getwd(), mustWork = TRUE)
+      qmd_path <- file.path(project_root, "report", "mz_report.qmd")
+      if (!file.exists(qmd_path)) {
+        stop("mz_report.qmd not found at ", qmd_path,
+             " — the Quarto report source must live under <project>/report/.")
+      }
+
+      out_html <- render_mz_report(
+        outputs_dir          = tmp,
+        data_dir             = "data",
+        author               = isolate(input$report_author %||% "MZ Analysis"),
+        study_area_name      = isolate(input$report_study_area %||% "Study Area"),
+        k_range              = seq(isolate(input$k_min), isolate(input$k_max)),
+        fuzziness            = isolate(input$fcm_m),
+        pca_threshold        = isolate(input$pca_thresh) / 100,
+        transition_threshold = 0.60,
+        interpolation_method = "kriging",
+        qmd_path             = qmd_path,
+        output_dir           = tmp,
+        verbose              = FALSE
+      )
+
+      mzlog("REPORT: rendered ", out_html, " (downloading to user)")
+      file.copy(out_html, file)
+    }
+  )
 
   output$session_summary <- renderUI({
     k <- rv$k_final

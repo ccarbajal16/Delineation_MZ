@@ -164,7 +164,8 @@ reproduce the **k = 5** solution shown in this README.
 ### Exports
 
 The **Export** tab streams files straight to your browser's download folder
-(nothing is written to the server), matching the batch script's output names:
+(nothing is written to the server, nothing pollutes the project directory).
+Filenames match the batch script's output names:
 
 | Button | File |
 |--------|------|
@@ -172,9 +173,13 @@ The **Export** tab streams files straight to your browser's download folder
 | Zone statistics CSV | `mz_zone_stats.csv` |
 | Point assignments CSV | `mz_point_assignments.csv` |
 | ANOVA results CSV | `mz_anova.csv` |
-| Zones GeoTIFF | `mz_zone_map.tif` (INT1U, CRS preserved) |
+| Zones GeoTIFF | `mz_zones.tif` (INT1U, CRS preserved) |
 | Zone map PNG | `mz_zone_map.png` (300 DPI, with legend) |
-| **Generate Report** | `report/mz_report.html` — see [Generating a report](#generating-a-report) |
+| **Generate Report** | `mz_report.html` — see [Generating a report](#generating-a-report) |
+
+The report's intermediate outputs (CSVs, PNGs, transition mask) are written to
+a per-call tempdir and removed when the render finishes, so the project folder
+stays untouched.
 
 ### Troubleshooting
 
