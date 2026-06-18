@@ -163,23 +163,23 @@ reproduce the **k = 5** solution shown in this README.
 
 ### Exports
 
-The **Export** tab streams files straight to your browser's download folder
-(nothing is written to the server, nothing pollutes the project directory).
-Filenames match the batch script's output names:
+The **Export** tab writes the artifacts to the project's `outputs/` folder
+(matching the layout the batch script uses). A confirmation notification
+shows the path of each saved file. Filenames match the batch script:
 
 | Button | File |
 |--------|------|
-| Validation CSV | `mz_validation.csv` |
-| Zone statistics CSV | `mz_zone_stats.csv` |
-| Point assignments CSV | `mz_point_assignments.csv` |
-| ANOVA results CSV | `mz_anova.csv` |
-| Zones GeoTIFF | `mz_zones.tif` (INT1U, CRS preserved) |
-| Zone map PNG | `mz_zone_map.png` (300 DPI, with legend) |
-| **Generate Report** | `mz_report.html` — see [Generating a report](#generating-a-report) |
+| Validation CSV | `outputs/mz_validation.csv` |
+| Zone statistics CSV | `outputs/mz_zone_stats.csv` |
+| Point assignments CSV | `outputs/mz_point_assignments.csv` |
+| ANOVA results CSV | `outputs/mz_anova.csv` |
+| Zones GeoTIFF | `outputs/mz_zones.tif` (INT1U, CRS preserved) |
+| Zone map PNG | `outputs/mz_zone_map.png` (300 DPI, with legend) |
+| **Generate Report** | `report/mz_report.html` — see [Generating a report](#generating-a-report) |
 
-The report's intermediate outputs (CSVs, PNGs, transition mask) are written to
-a per-call tempdir and removed when the render finishes, so the project folder
-stays untouched.
+The `outputs/` folder is created on first export. The **Generate Report** button
+also writes the missing CSVs, PNGs, and the transition mask to `outputs/` so
+the Quarto report has everything it needs.
 
 ### Troubleshooting
 
