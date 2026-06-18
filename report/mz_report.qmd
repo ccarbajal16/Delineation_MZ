@@ -1,0 +1,514 @@
+---
+title: "Management Zone Delineation Report"
+subtitle: "Fuzzy C-Means with PCA dimensionality reduction and ordinary kriging"
+author: "`{r} params$author`"
+date: today
+date-format: "long"
+lang: en
+format:
+  html:
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    code-fold: true
+    code-summary: "Show R code"
+    embed-resources: true
+    fig-width: 8
+    fig-height: 5
+    fig-dpi: 150
+    theme: cosmo
+    df-print: kable
+  pdf:
+    toc: true
+    number-sections: true
+    fig-width: 6.5
+    fig-height: 4
+    df-print: kable
+    keep-tex: false
+execute:
+  echo: false
+  warning: false
+  message: false
+  cache: false
+params:
+  outputs_dir: "outputs"
+  data_dir: "data"
+  author: "MZ Analysis"
+  study_area_name: "Study Area"
+  k_range: [2, 3, 4, 5, 6]
+  fuzziness: 2
+  pca_threshold: 0.80
+  transition_threshold: 0.60
+  interpolation_method: "kriging"
+  seed: 42
+---
+
+```{r setup}
+#| include: false
+
+suppressPackageStartupMessages({
+  library(terra)
+  library(sf)
+  library(ggplot2)
+  library(dplyr)
+  library(tidyr)
+  library(knitr)
+})
+
+# ---- Resolve paths relative to the project root ----------------------------
+# The .qmd lives in `report/`; the project root is its parent. We resolve
+# `params$outputs_dir` and `params$data_dir` against that root so that
+# `quarto render report/mz_report.qmd` works regardless of the caller's CWD.
+
+qmd_dir <- normalizePath(dirname(knitr::current_input()), mustWork = TRUE)
+project_root <- normalizePath(file.path(qmd_dir, ".."), mustWork = TRUE)
+
+resolve_from_root <- function(p) {
+  if (is.null(p) || !nzchar(p)) return(p)
+  if (file.exists(p)) return(normalizePath(p, mustWork = TRUE))
+  candidate <- file.path(project_root, p)
+  if (file.exists(candidate)) return(normalizePath(candidate, mustWork = TRUE))
+  p
+}
+
+OUT <- resolve_from_root(params$outputs_dir)
+DATA <- resolve_from_root(params$data_dir)
+
+SOIL_VARS <- c("BD", "CEC", "Fragm", "Sand", "Silt", "Clay",
+               "N", "OCD", "pH", "SOC")
+
+# ---- File existence check --------------------------------------------------
+required <- c(
+  file.path(OUT, "mz_validation.csv"),
+  file.path(OUT, "mz_zone_stats.csv"),
+  file.path(OUT, "mz_anova.csv"),
+  file.path(OUT, "mz_point_assignments.csv"),
+  file.path(OUT, "mz_zone_map.tif"),
+  file.path(OUT, "mz_transition.tif")
+)
+missing <- required[!file.exists(required)]
+if (length(missing) > 0) {
+  stop("Missing required outputs: ",
+       paste(missing, collapse = ", "),
+       "\nProject root resolved to: ", project_root, "\n",
+       "Run `delineation_management_zones.R` first.")
+}
+```
+
+# Executive summary
+
+```{r exec-summary-load}
+validation <- read.csv(file.path(OUT, "mz_validation.csv"))
+opt_k <- validation$k[which.min(validation$consensus_rank)]
+point_assignments <- read.csv(file.path(OUT, "mz_point_assignments.csv"))
+n_points <- nrow(point_assignments)
+n_zones <- length(unique(point_assignments$Zone))
+n_soil_vars <- length(SOIL_VARS)
+
+zone_map <- rast(file.path(OUT, "mz_zone_map.tif"))
+n_cells <- ncell(zone_map)
+valid_cells <- sum(!is.na(values(zone_map, mat = FALSE)))
+
+transition <- rast(file.path(OUT, "mz_transition.tif"))
+pct_transition <- round(100 * mean(values(transition, mat = FALSE) == 1, na.rm = TRUE), 1)
+```
+
+This report summarizes the delineation of **`r n_zones` management zones** over a study area
+(`r params$study_area_name`) covering **`r format(valid_cells, big.mark = ",")` valid raster cells**
+(out of `r format(n_cells, big.mark = ",")` total) at the resolution of the input soil-property
+raster. Zone counts were evaluated over `r paste(params$k_range, collapse = ", ")`, and the
+optimal value **k = `r opt_k`** was selected by the consensus of the Xie-Beni (XB), Fuzzy
+Performance Index (FPI), and Normalized Classification Entropy (NCE) indices.
+
+The analysis used **`r n_points` observation points** and **`r n_soil_vars` soil properties**
+(BD, CEC, Fragm, Sand, Silt, Clay, N, OCD, pH, SOC). Membership surfaces were interpolated by
+**`r params$interpolation_method`**; `r pct_transition`% of the study area falls in a transition
+zone (maximum membership below `r params$transition_threshold`).
+
+# 1. Inputs
+
+```{r inputs-load}
+boundary_path <- file.path(DATA, "agro_geo.gpkg")
+raster_path   <- file.path(DATA, "soil_predictions.tif")
+points_path   <- file.path(DATA, "soilgrids_data.csv")
+
+boundary <- if (file.exists(boundary_path)) st_read(boundary_path, quiet = TRUE) else NULL
+soil_stack <- if (file.exists(raster_path)) rast(raster_path) else NULL
+points_raw <- if (file.exists(points_path)) read.csv(points_path) else NULL
+```
+
+The pipeline reads three local data sources. Their metadata is summarized below.
+
+```{r inputs-table}
+#| tbl-cap: "Input data summary"
+
+input_meta <- tibble::tribble(
+  ~Input, ~File, ~Format, ~Description,
+  "Study-area boundary",
+  basename(boundary_path),
+  if (!is.null(boundary)) paste0("GeoPackage, ", nrow(boundary), " feature(s)") else "n/a",
+  "Single polygon defining the crop field extent",
+  "Soil-property raster",
+  basename(raster_path),
+  if (!is.null(soil_stack))
+    paste0("GeoTIFF, ", nlyr(soil_stack), " layer(s), ",
+           format(ncell(soil_stack), big.mark = ","), " cells") else "n/a",
+  paste0("Multi-layer stack: ", if (!is.null(soil_stack)) paste(names(soil_stack), collapse = ", ") else "n/a"),
+  "Observation points",
+  basename(points_path),
+  if (!is.null(points_raw)) paste0("CSV, ", nrow(points_raw), " rows, ", ncol(points_raw), " cols") else "n/a",
+  paste0("Columns: ", if (!is.null(points_raw)) paste(names(points_raw), collapse = ", ") else "n/a")
+)
+kable(input_meta, align = "lll")
+```
+
+## 1.1 Coordinate reference system
+
+Points are read in **EPSG:4326** (lon/lat) and reprojected to the raster CRS. The boundary is
+reprojected to the raster CRS before crop and mask. The raster and the boundary must spatially
+overlap; otherwise the pipeline aborts with a clear error.
+
+## 1.2 Study-area boundary
+
+```{r boundary-fig}
+#| fig-cap: "Study-area boundary"
+#| fig-width: 6
+#| fig-height: 6
+
+if (!is.null(boundary)) {
+  b <- st_make_valid(boundary)
+  bb <- st_bbox(b)
+  aspect <- (bb["xmax"] - bb["xmin"]) / (bb["ymax"] - bb["ymin"])
+  ggplot() +
+    geom_sf(data = b, fill = "grey85", color = "black", linewidth = 0.4) +
+    coord_sf(crs = st_crs(b)) +
+    labs(title = "Study-area boundary",
+         caption = paste0("CRS: ", st_crs(b)$Name %||% st_crs(b)$input)) +
+    theme_minimal(base_size = 11) +
+    theme(axis.title = element_blank())
+} else {
+  ggplot() + annotate("text", x = 0, y = 0, label = "Boundary file not available") + theme_void()
+}
+```
+
+# 2. Pre-processing
+
+```{r preprocess-load}
+points_sf <- st_as_sf(points_raw,
+                       coords = c("longitude", "latitude"),
+                       crs = 4326)
+if (!is.null(soil_stack)) {
+  raster_crs <- crs(soil_stack)
+  if (!is.null(boundary) &&
+      !identical(as.character(st_crs(boundary)), as.character(raster_crs))) {
+    boundary <- st_transform(boundary, raster_crs)
+  }
+  boundary_vect <- vect(boundary)
+  soil_masked <- crop(soil_stack, boundary_vect)
+  soil_masked <- mask(soil_masked, boundary_vect)
+} else {
+  soil_masked <- NULL
+}
+```
+
+## 2.1 Raster value extraction at observation points
+
+Raster values were extracted at every observation point using `terra::extract` (called with the
+`terra::` namespace to avoid a collision with `tidyr::extract`). Where the raster layer name
+matched a column in the input CSV, the raster value overwrote the CSV value; otherwise the CSV
+value was retained.
+
+## 2.2 NA imputation and normalization
+
+Any remaining missing values in the soil-property matrix were median-imputed per variable.
+Features were then min-max normalized to the unit interval `[0, 1]` to make them commensurate
+for the PCA and FCM stages.
+
+# 3. Dimensionality reduction (PCA)
+
+PCA was run on the normalized feature matrix (no centering or scaling, since inputs are already
+in `[0, 1]`). Principal components were retained until cumulative variance reached
+`r round(params$pca_threshold * 100)`%.
+
+```{r pca}
+#| fig-cap: "PCA scree plot (cumulative variance)"
+#| fig-width: 7
+#| fig-height: 4
+
+df_norm <- as.data.frame(lapply(points_raw[, SOIL_VARS, drop = FALSE], as.numeric))
+df_norm <- as.data.frame(lapply(df_norm, function(x) {
+  rng <- max(x, na.rm = TRUE) - min(x, na.rm = TRUE)
+  if (!is.finite(rng) || rng == 0) return(rep(0.5, length(x)))
+  (x - min(x, na.rm = TRUE)) / rng
+}))
+
+pca_raw <- prcomp(df_norm, center = FALSE, scale. = FALSE)
+eig <- pca_raw$sdev^2
+prop_var <- eig / sum(eig)
+cumvar <- cumsum(prop_var)
+n_pc <- which(cumvar >= params$pca_threshold)[1]
+if (is.na(n_pc)) n_pc <- length(eig)
+
+pca_tbl <- tibble::tibble(
+  PC = seq_along(prop_var),
+  Eigenvalue = round(eig, 4),
+  Proportion = round(prop_var, 4),
+  Cumulative = round(cumvar, 4)
+)
+
+pca_long <- pca_tbl %>%
+  pivot_longer(cols = c(Proportion, Cumulative),
+               names_to = "Metric", values_to = "Value")
+
+ggplot(pca_long, aes(PC, Value, color = Metric)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = pca_tbl$PC) +
+  labs(x = "Principal component", y = "Variance",
+       title = "PCA variance explained",
+       subtitle = paste0("Retained ", n_pc, " PCs (",
+                         round(cumvar[n_pc] * 100, 1), "% cumulative)")) +
+  theme_minimal(base_size = 11)
+```
+
+```{r pca-table}
+#| tbl-cap: "PCA eigenvalues and variance explained"
+
+kable(pca_tbl, align = "rrrr")
+```
+
+# 4. Cluster-validity analysis
+
+Fuzzy C-Means was fit on the retained PCA scores for every `k` in
+`r paste(params$k_range, collapse = ", ")` (fuzziness m = `r params$fuzziness`,
+`iter.max = 300`, fixed seed = `r params$seed`). Five cluster-validity indices were computed:
+
+- **XB** — Xie-Beni index (lower is better)
+- **FPI** — Fuzzy Performance Index (lower is better; McBratney & Moore 1985)
+- **NCE** — Normalized Classification Entropy (lower is better)
+- **PE** — Partition Entropy (lower is better)
+- **FS** — Fukuyama-Sugeno index (lower is better)
+
+The optimal `k` was selected as the **consensus minimum** of the XB, FPI, and NCE ranks.
+
+```{r validation-table}
+#| tbl-cap: "Cluster-validity indices and ranks"
+
+validation_disp <- validation %>%
+  mutate(across(c(XB, FPI, NCE, PE, FS), ~ signif(.x, 4))) %>%
+  arrange(consensus_rank)
+kable(validation_disp, align = "rrrrrrrr")
+```
+
+```{r validation-fig}
+#| fig-cap: "Cluster-validity indices (min-max scaled, lower = better)"
+#| fig-width: 7
+#| fig-height: 4
+
+knitr::include_graphics(file.path(OUT, "mz_validation_all_indices.png"))
+```
+
+# 5. Final FCM model and zone map
+
+The final FCM was fit with the optimal k = `r opt_k` (consensus rank = `r min(validation$consensus_rank)`).
+Each observation point was assigned to the zone with the largest membership, and the `k` membership
+surfaces were interpolated across the study area by `r params$interpolation_method`.
+
+```{r zone-fig}
+#| fig-cap: "Management zone map (k = optimal)"
+#| fig-width: 7
+#| fig-height: 7
+
+knitr::include_graphics(file.path(OUT, "mz_zone_map.png"))
+```
+
+## 5.1 Zone assignment summary
+
+```{r zone-assign}
+#| tbl-cap: "Observation points per zone"
+
+zone_counts <- point_assignments %>%
+  count(Zone) %>%
+  mutate(Proportion = round(100 * n / sum(n), 1))
+kable(zone_counts, align = "rrr", col.names = c("Zone", "Points", "Share (%)"))
+```
+
+## 5.2 Transition mask
+
+A cell is flagged as a transition zone when the maximum membership at that cell is below
+`r params$transition_threshold`. **`r pct_transition`%** of the study area falls in this category;
+the remaining `r round(100 - pct_transition, 1)`% is a "core" zone with a confident assignment.
+
+# 6. Zone statistics
+
+```{r zone-stats}
+zone_stats <- read.csv(file.path(OUT, "mz_zone_stats.csv"))
+zone_stats_disp <- zone_stats %>%
+  mutate(across(-Zone, ~ signif(.x, 3)))
+kable(zone_stats_disp, align = "r")
+```
+
+## 6.1 ANOVA and effect size (η²)
+
+For each soil variable, a one-way ANOVA tested the null hypothesis that the variable mean is
+equal across zones. The η² effect size is reported in addition to the p-value.
+
+```{r anova}
+#| tbl-cap: "Per-variable ANOVA and effect size"
+#| message: false
+#| warning: false
+
+if (!requireNamespace("effectsize", quietly = TRUE)) {
+  message("`effectsize` not available; reporting p-values only.")
+  anova_disp <- read.csv(file.path(OUT, "mz_anova.csv")) %>%
+    mutate(eta_sq = NA_real_) %>%
+    mutate(p_value = signif(p_value, 4)) %>%
+    select(variable, eta_sq, p_value)
+  kable(anova_disp, align = "lrr", col.names = c("Variable", "η²", "p-value"))
+} else {
+  suppressPackageStartupMessages(library(effectsize))
+
+  pts <- point_assignments %>% select(fid, Zone)
+  df_for_aov <- points_raw %>%
+    select(fid, all_of(SOIL_VARS)) %>%
+    inner_join(pts, by = "fid")
+
+  anova_disp <- do.call(rbind, lapply(SOIL_VARS, function(v) {
+    fit <- aov(as.formula(paste(v, "~ factor(Zone)")), data = df_for_aov)
+    p_val <- summary(fit)[[1]][["Pr(>F)"]][1]
+    es <- effectsize::eta_squared(fit, partial = FALSE)
+    data.frame(
+      variable = v,
+      eta_sq   = round(es$Eta2[1], 3),
+      p_value  = signif(p_val, 4)
+    )
+  })) %>%
+    mutate(significance = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      p_value < 0.1   ~ ".",
+      TRUE            ~ ""
+    ))
+
+  kable(anova_disp, align = "lrrl",
+        col.names = c("Variable", "η²", "p-value", "Sig."))
+}
+```
+
+> **Note.** The η² values above are computed on the original CSV observations for transparency.
+> The per-zone means in the previous table were computed on the post-extraction matrix (raster
+> values overwrite CSV values where available) used during clustering. Differences are small in
+> practice and only affect cells where the CSV had a value and the raster had a different one.
+
+# 7. Uncertainty map (membership entropy)
+
+Fuzzy assignments carry intrinsic uncertainty: a cell near the boundary between two zones will
+have intermediate memberships for both. The Shannon entropy of the membership vector at each cell
+summarizes this:
+
+$$H(\mathbf{u}) = -\sum_{j=1}^{k} u_j \log u_j$$
+
+Higher entropy ⇒ more ambiguous assignment. This is a useful diagnostic, since transition zones
+defined by a hard threshold (Section 5.2) lose the gradient information.
+
+```{r entropy}
+#| fig-cap: "Membership entropy across the study area"
+#| fig-width: 7
+#| fig-height: 7
+#| message: false
+
+memb_files <- list.files(OUT, pattern = "^mz_membership_z[0-9]+\\.tif$",
+                         full.names = TRUE)
+memb_stack <- rast(memb_files)
+memb_vals <- values(memb_stack, mat = TRUE)
+memb_vals <- pmax(memb_vals, .Machine$double.xmin)
+memb_vals <- memb_vals / rowSums(memb_vals)  # renormalize (defensive)
+entropy_vec <- -rowSums(memb_vals * log(memb_vals))
+
+entropy_rast <- memb_stack[[1]]
+values(entropy_rast) <- entropy_vec
+if (!is.null(boundary)) {
+  entropy_rast <- mask(entropy_rast, vect(boundary))
+}
+entropy_df <- as.data.frame(entropy_rast, xy = TRUE)
+names(entropy_df) <- c("x", "y", "Entropy")
+
+entropy_summary <- data.frame(
+  Statistic = c("Min", "1st quartile", "Median", "Mean",
+                "3rd quartile", "Max", "log(k) ceiling"),
+  Value     = round(c(quantile(entropy_vec, c(0, 0.25, 0.5, 0.5, 0.75, 1),
+                              na.rm = TRUE)[c(1, 2, 3, 5)],
+                      mean(entropy_vec, na.rm = TRUE),
+                      max(entropy_vec, na.rm = TRUE),
+                      log(n_zones)), 4),
+  stringsAsFactors = FALSE
+)
+```
+
+```{r entropy-stats}
+#| tbl-cap: "Entropy distribution"
+kable(entropy_summary, align = "lr")
+```
+
+```{r entropy-plot}
+#| fig-width: 7
+#| fig-height: 7
+
+if (nrow(entropy_df) > 0) {
+  ggplot(entropy_df, aes(x, y, fill = Entropy)) +
+    geom_raster() +
+    scale_fill_viridis_c(option = "inferno", name = "Entropy") +
+    coord_equal() +
+    labs(title = "Membership entropy",
+         subtitle = "Higher = more ambiguous zone assignment") +
+    theme_minimal(base_size = 11) +
+    theme(axis.title = element_blank())
+}
+```
+
+# 8. Reproducibility
+
+```{r reproducibility}
+#| results: "asis"
+
+param_tbl <- data.frame(
+  Parameter = c(
+    "Fuzziness (m)",
+    "k range",
+    "PCA cumulative-variance threshold",
+    "Transition threshold (max membership)",
+    "Interpolation method",
+    "Random seed"
+  ),
+  Value = c(
+    as.character(params$fuzziness),
+    paste(params$k_range, collapse = ", "),
+    as.character(params$pca_threshold),
+    as.character(params$transition_threshold),
+    params$interpolation_method,
+    as.character(params$seed)
+  ),
+  stringsAsFactors = FALSE
+)
+knitr::asis_output(paste0(
+  "<details><summary>Pipeline parameters</summary>\n\n",
+  knitr::knit_print(kable(param_tbl, align = "lr", format = "html")),
+  "\n</details>"
+))
+```
+
+```{r session-info}
+#| results: "asis"
+si <- sessionInfo()
+knitr::asis_output(paste0(
+  "<details><summary>R session info</summary>\n\n",
+  "```\n",
+  paste(capture.output(print(si)), collapse = "\n"),
+  "\n```\n\n</details>"
+))
+```
+
+---
+
+*Report generated by `report/mz_report.qmd` on `r format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")`.*
