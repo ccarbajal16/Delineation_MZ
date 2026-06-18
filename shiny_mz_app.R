@@ -1009,6 +1009,34 @@ ui <- fluidPage(
             ),
             div(class = "card",
               div(class = "card-header",
+                span(class = "card-title", "Generate HTML Report")
+              ),
+              div(class = "card-body",
+                div(style = "font-size:12px; color:#7f8c8d; margin-bottom:10px;",
+                    "Renders report/mz_report.qmd with the current session's results. ",
+                    "Writes the missing outputs (including the transition mask) to ",
+                    "outputs/ and runs the Quarto CLI; the resulting HTML is saved to ",
+                    "report/mz_report.html."),
+                div(class = "setting-group",
+                    tags$label(class = "setting-label", "Author"),
+                    textInput("report_author", NULL, value = "MZ Analysis",
+                              placeholder = "e.g. C. Carbajal")
+                ),
+                div(class = "setting-group",
+                    tags$label(class = "setting-label", "Study area name"),
+                    textInput("report_study_area", NULL, value = "Study Area",
+                              placeholder = "e.g. INIA Test Field")
+                ),
+                actionButton("btn_export_report", "Generate Report",
+                             icon("file-alt"),
+                             style = "background:#2980b9; color:white; width:100%; margin-top:6px;"),
+                div(style = "font-size:11px; color:#95a5a6; margin-top:6px;",
+                    "Requires Quarto CLI on PATH; the Shiny app will pause while ",
+                    "the report is rendered (~3 s for the bundled data).")
+              )
+            ),
+            div(class = "card",
+              div(class = "card-header",
                 span(class = "card-title", "Restart")
               ),
               div(class = "card-body",
@@ -2336,6 +2364,184 @@ server <- function(input, output, session) {
       mzlog("EXPORT: PNG error — ", conditionMessage(e))
       showNotification(paste0("PNG export failed: ", conditionMessage(e)),
                        type = "error", duration = 10)
+    })
+  })
+
+  # ── HTML report ─────────────────────────────────────────────────────────────
+  # Self-contained: writes everything the Quarto report expects to outputs/
+  # (including the transition mask the rest of the app does not persist),
+  # then calls R/render_mz_report.R to render report/mz_report.qmd to HTML.
+  # Mirrors the standalone batch pipeline's output layout (data in outputs/,
+  # qmd in report/), so the same report works from either entry point.
+  observeEvent(input$btn_export_report, {
+    # All of these are produced by the previous steps; the report needs them
+    # on disk in outputs/ before it can render.
+    need <- list(
+      validation_df = rv$validation_df,
+      fcm_result    = rv$fcm_result,
+      df_vars       = rv$df_vars,
+      obs_sf        = rv$obs_sf,
+      zone_hard     = rv$zone_hard,
+      soil_vars     = rv$soil_vars
+    )
+    missing_keys <- names(need)[vapply(need, is.null, logical(1))]
+    if (length(missing_keys) > 0) {
+      showNotification(
+        paste0("Cannot generate report: run steps 1–4 first (missing: ",
+               paste(missing_keys, collapse = ", "), ")."),
+        type = "warning", duration = 8
+      )
+      return(invisible(NULL))
+    }
+
+    withProgress(message = "Rendering HTML report…", value = 0, {
+      tryCatch({
+        incProgress(0.1, detail = "Writing outputs/")
+        if (!dir.exists("outputs")) dir.create("outputs", recursive = TRUE)
+
+        # 1. Validation table (already in memory)
+        write.csv(rv$validation_df, "outputs/mz_validation.csv",
+                  row.names = FALSE)
+
+        # 2. Per-zone means
+        df_stats  <- cbind(rv$df_vars, Zone = rv$fcm_result$cluster_id)
+        zone_means <- aggregate(. ~ Zone, data = df_stats, FUN = mean)
+        write.csv(zone_means, "outputs/mz_zone_stats.csv", row.names = FALSE)
+
+        # 3. ANOVA (p-values only — the .qmd recomputes η² from raw data)
+        anova_res <- lapply(rv$soil_vars, function(v) {
+          summary(aov(as.formula(paste(v, "~ Zone")), data = df_stats))[[1]]$"Pr(>F)"[1]
+        })
+        write.csv(data.frame(variable = rv$soil_vars,
+                             p_value  = unlist(anova_res)),
+                  "outputs/mz_anova.csv", row.names = FALSE)
+
+        # 4. Point assignments (rich: fid, lon, lat, Zone, memberships)
+        pa <- rv$obs_sf
+        if (!"fid" %in% names(pa)) pa$fid <- seq_len(nrow(pa))
+        coords <- st_coordinates(pa)
+        pa_tbl <- data.frame(
+          fid       = pa$fid,
+          longitude = coords[, 1],
+          latitude  = coords[, 2],
+          Zone      = rv$fcm_result$cluster_id,
+          round(as.data.frame(rv$fcm_result$membership), 6)
+        )
+        names(pa_tbl)[6:ncol(pa_tbl)] <- paste0("membership_z", seq_len(ncol(rv$fcm_result$membership)))
+        write.csv(pa_tbl, "outputs/mz_point_assignments.csv", row.names = FALSE)
+
+        # 5. Hard zone map (already produced by btn_export_zone_tif; re-emit
+        #    into outputs/ so the report can find it without depending on
+        #    the user having clicked that button first).
+        terra::writeRaster(rv$zone_hard, "outputs/mz_zone_map.tif",
+                           overwrite = TRUE, datatype = "INT1U", NAflag = 255)
+
+        # 5b. PNG figure of the zone map (300 DPI, with legend). The Shiny app
+        #     exposes this via btn_export_zone_png, but we don't want the
+        #     report to depend on the user having clicked that button first.
+        png_path <- "outputs/mz_zone_map.png"
+        k        <- rv$k_final
+        cols     <- zoneColors(k)
+        grDevices::png(png_path, width = 8, height = 6, units = "in", res = 300)
+        on.exit(grDevices::dev.off(), add = TRUE)
+        terra::plot(rv$zone_hard,
+                    main = paste0("Management Zone Map  (k = ", k,
+                                  ", Fuzzy C-Means, m = ",
+                                  isolate(input$fcm_m), ")"),
+                    axes = FALSE, box = FALSE, legend = FALSE)
+        graphics::legend("topright",
+                         legend = paste0("Zone ", seq_len(k)),
+                         fill = cols, border = NA, bty = "n", cex = 0.9)
+
+        # 5c. Validation index plot (mirrors save_validation_plot in the
+        #     standalone script). Scaled to [0, 1] so all five indices share
+        #     a y-axis. Lower is better for all of them.
+        vi_path <- "outputs/mz_validation_all_indices.png"
+        scale01 <- function(x) {
+          rng <- max(x, na.rm = TRUE) - min(x, na.rm = TRUE)
+          if (!is.finite(rng) || rng == 0) return(rep(0.5, length(x)))
+          (x - min(x, na.rm = TRUE)) / rng
+        }
+        vplot_df <- rbind(
+          data.frame(k = rv$validation_df$k, index = "XB",
+                     value = scale01(rv$validation_df$XB)),
+          data.frame(k = rv$validation_df$k, index = "FPI",
+                     value = scale01(rv$validation_df$FPI)),
+          data.frame(k = rv$validation_df$k, index = "NCE",
+                     value = scale01(rv$validation_df$NCE)),
+          data.frame(k = rv$validation_df$k, index = "PE",
+                     value = scale01(rv$validation_df$PE)),
+          data.frame(k = rv$validation_df$k, index = "FS",
+                     value = scale01(rv$validation_df$FS))
+        )
+        vplot <- ggplot2::ggplot(vplot_df, ggplot2::aes(k, value, color = index)) +
+          ggplot2::geom_line(linewidth = 0.8) +
+          ggplot2::geom_point(size = 2) +
+          ggplot2::scale_x_continuous(breaks = rv$validation_df$k) +
+          ggplot2::labs(x = "Number of zones (k)",
+                        y = "Scaled index value (lower = better)",
+                        color = "Index",
+                        title = "Cluster-validity indices") +
+          ggplot2::theme_minimal(base_size = 12)
+        ggplot2::ggsave(vi_path, vplot, width = 7, height = 4.5, dpi = 300)
+
+        # 6. Transition mask — the standalone script writes this, the app
+        #    does not. Compute from rv$zone_stack (full-res membership stack)
+        #    at the same default 0.60 threshold.
+        if (!is.null(rv$zone_stack)) {
+          trans_thr <- 0.60
+          transition_mask <- terra::app(rv$zone_stack, function(x) {
+            if (all(is.na(x))) return(NA_real_)
+            as.numeric(max(x, na.rm = TRUE) < trans_thr)
+          })
+          names(transition_mask) <- "Transition"
+          terra::writeRaster(transition_mask, "outputs/mz_transition.tif",
+                             overwrite = TRUE, datatype = "INT1U", NAflag = 255)
+        }
+
+        incProgress(0.4, detail = "Running Quarto CLI")
+        # Source the wrapper if it hasn't been sourced (e.g. when the app is
+        # launched via shiny::runApp without the user running the rest of the
+        # project).
+        if (!exists("render_mz_report", mode = "function")) {
+          source("R/render_mz_report.R", local = TRUE)
+        }
+
+        # Resolve the report's qmd path. The .qmd lives at <project>/report/.
+        project_root <- normalizePath(getwd(), mustWork = TRUE)
+        qmd_path <- file.path(project_root, "report", "mz_report.qmd")
+        if (!file.exists(qmd_path)) {
+          stop("mz_report.qmd not found at ", qmd_path,
+               " — the Quarto report source must live under <project>/report/.")
+        }
+
+        out_html <- render_mz_report(
+          outputs_dir          = "outputs",
+          data_dir             = "data",
+          author               = isolate(input$report_author %||% "MZ Analysis"),
+          study_area_name      = isolate(input$report_study_area %||% "Study Area"),
+          k_range              = seq(isolate(input$k_min), isolate(input$k_max)),
+          fuzziness            = isolate(input$fcm_m),
+          pca_threshold        = isolate(input$pca_thresh) / 100,
+          transition_threshold = 0.60,
+          interpolation_method = "kriging",
+          qmd_path             = qmd_path,
+          verbose              = FALSE
+        )
+
+        incProgress(1.0, detail = "Done")
+        mzlog("REPORT: rendered ", out_html)
+        showNotification(
+          paste0("HTML report rendered → ", out_html),
+          type = "message", duration = 6
+        )
+      }, error = function(e) {
+        mzlog("REPORT: error — ", conditionMessage(e))
+        showNotification(
+          paste0("Report rendering failed: ", conditionMessage(e)),
+          type = "error", duration = 12
+        )
+      })
     })
   })
 

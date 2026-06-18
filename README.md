@@ -153,7 +153,7 @@ names, and choose how point coordinates are interpreted (**auto-detect**,
 | 3 | **Clustering** | Accept the optimal k or override it, then **Run FCM Clustering** to get hard zone assignments per point. |
 | 4 | **Zone Maps** | Membership surfaces are kriged and the hard zone map is built automatically (large rasters are downsampled so the UI stays responsive). Use **Regenerate** to recompute. |
 | 5 | **Statistics** | Per-zone mean soil properties, one-way ANOVA per variable, and a comparison plot. |
-| 6 | **Export** | Download the results (see below). |
+| 6 | **Export** | Download the results (CSVs, GeoTIFF, PNG, and the HTML report). |
 
 ### Try it with the bundled demo
 
@@ -174,6 +174,7 @@ The **Export** tab streams files straight to your browser's download folder
 | ANOVA results CSV | `mz_anova.csv` |
 | Zones GeoTIFF | `mz_zone_map.tif` (INT1U, CRS preserved) |
 | Zone map PNG | `mz_zone_map.png` (300 DPI, with legend) |
+| **Generate Report** | `report/mz_report.html` — see [Generating a report](#generating-a-report) |
 
 ### Troubleshooting
 
@@ -202,6 +203,11 @@ without re-running anything. To regenerate it from R:
 source("R/render_mz_report.R")
 render_mz_report()  # default: HTML, study area = "Study Area"
 ```
+
+You can also click **Generate Report** in the Shiny app's **Export** tab (Step 6).
+The handler writes the missing outputs (CSVs, zone map, validation index plot,
+transition mask) to `outputs/` and renders the report in one go — the resulting
+`report/mz_report.html` is then ready to download.
 
 Or pass your own metadata:
 

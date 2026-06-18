@@ -78,15 +78,22 @@ SOIL_VARS <- c("BD", "CEC", "Fragm", "Sand", "Silt", "Clay",
                "N", "OCD", "pH", "SOC")
 
 # ---- File existence check --------------------------------------------------
+# `mz_transition.tif` and `mz_point_assignments.csv` are *optional*. The Shiny
+# app does not always write the transition mask (it has no UI control for the
+# transition threshold) and may not persist point assignments to disk. Missing
+# optional files show a small notice in the report rather than aborting render.
 required <- c(
   file.path(OUT, "mz_validation.csv"),
   file.path(OUT, "mz_zone_stats.csv"),
   file.path(OUT, "mz_anova.csv"),
+  file.path(OUT, "mz_zone_map.tif")
+)
+optional <- c(
   file.path(OUT, "mz_point_assignments.csv"),
-  file.path(OUT, "mz_zone_map.tif"),
   file.path(OUT, "mz_transition.tif")
 )
 missing <- required[!file.exists(required)]
+missing_optional <- optional[!file.exists(optional)]
 if (length(missing) > 0) {
   stop("Missing required outputs: ",
        paste(missing, collapse = ", "),
@@ -100,17 +107,31 @@ if (length(missing) > 0) {
 ```{r exec-summary-load}
 validation <- read.csv(file.path(OUT, "mz_validation.csv"))
 opt_k <- validation$k[which.min(validation$consensus_rank)]
-point_assignments <- read.csv(file.path(OUT, "mz_point_assignments.csv"))
-n_points <- nrow(point_assignments)
-n_zones <- length(unique(point_assignments$Zone))
 n_soil_vars <- length(SOIL_VARS)
 
-zone_map <- rast(file.path(OUT, "mz_zone_map.tif"))
-n_cells <- ncell(zone_map)
-valid_cells <- sum(!is.na(values(zone_map, mat = FALSE)))
+# Optional: point assignments
+pa_path <- file.path(OUT, "mz_point_assignments.csv")
+has_pa <- file.exists(pa_path)
+point_assignments <- if (has_pa) read.csv(pa_path) else NULL
+n_points <- if (has_pa) nrow(point_assignments) else NA_integer_
 
-transition <- rast(file.path(OUT, "mz_transition.tif"))
-pct_transition <- round(100 * mean(values(transition, mat = FALSE) == 1, na.rm = TRUE), 1)
+# Optional: zone map. The hard zone raster is required; the membership
+# rasters (mz_membership_z*.tif) are needed for the uncertainty map.
+zone_map <- rast(file.path(OUT, "mz_zone_map.tif"))
+zone_vals <- values(zone_map, mat = FALSE)
+n_cells <- ncell(zone_map)
+valid_cells <- sum(!is.na(zone_vals))
+n_zones <- length(unique(zone_vals[!is.na(zone_vals)]))
+
+# Optional: transition mask
+trans_path <- file.path(OUT, "mz_transition.tif")
+has_transition <- file.exists(trans_path)
+pct_transition <- if (has_transition) {
+  transition <- rast(trans_path)
+  round(100 * mean(values(transition, mat = FALSE) == 1, na.rm = TRUE), 1)
+} else {
+  NA_real_
+}
 ```
 
 This report summarizes the delineation of **`r n_zones` management zones** over a study area
@@ -120,10 +141,9 @@ raster. Zone counts were evaluated over `r paste(params$k_range, collapse = ", "
 optimal value **k = `r opt_k`** was selected by the consensus of the Xie-Beni (XB), Fuzzy
 Performance Index (FPI), and Normalized Classification Entropy (NCE) indices.
 
-The analysis used **`r n_points` observation points** and **`r n_soil_vars` soil properties**
+The analysis used `r if (has_pa) paste0("**", n_points, "** observation points and ") else ""`**`r n_soil_vars` soil properties**
 (BD, CEC, Fragm, Sand, Silt, Clay, N, OCD, pH, SOC). Membership surfaces were interpolated by
-**`r params$interpolation_method`**; `r pct_transition`% of the study area falls in a transition
-zone (maximum membership below `r params$transition_threshold`).
+**`r params$interpolation_method`**; `r if (has_transition) paste0(pct_transition, "% of the study area falls in a transition zone (maximum membership below ", params$transition_threshold, ").") else "no transition mask was written to disk; the per-cell uncertainty (entropy) is reported in section 8."`
 
 # 1. Inputs
 
@@ -305,7 +325,31 @@ kable(validation_disp, align = "rrrrrrrr")
 #| fig-width: 7
 #| fig-height: 4
 
-knitr::include_graphics(file.path(OUT, "mz_validation_all_indices.png"))
+# Inline plot: each index min-max scaled to [0, 1] so they share a y-axis.
+# Lower is better for all of them, so a "going down" trajectory is the goal.
+scale01 <- function(x) {
+  rng <- max(x, na.rm = TRUE) - min(x, na.rm = TRUE)
+  if (!is.finite(rng) || rng == 0) return(rep(0.5, length(x)))
+  (x - min(x, na.rm = TRUE)) / rng
+}
+
+vplot_df <- rbind(
+  data.frame(k = validation$k, index = "XB",  value = scale01(validation$XB)),
+  data.frame(k = validation$k, index = "FPI", value = scale01(validation$FPI)),
+  data.frame(k = validation$k, index = "NCE", value = scale01(validation$NCE)),
+  data.frame(k = validation$k, index = "PE",  value = scale01(validation$PE)),
+  data.frame(k = validation$k, index = "FS",  value = scale01(validation$FS))
+)
+
+ggplot(vplot_df, aes(k, value, color = index)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 2) +
+  scale_x_continuous(breaks = validation$k) +
+  labs(x = "Number of zones (k)",
+       y = "Scaled index value (lower = better)",
+       color = "Index",
+       title = "Cluster-validity indices") +
+  theme_minimal(base_size = 11)
 ```
 
 # 5. Final FCM model and zone map
@@ -327,17 +371,20 @@ knitr::include_graphics(file.path(OUT, "mz_zone_map.png"))
 ```{r zone-assign}
 #| tbl-cap: "Observation points per zone"
 
-zone_counts <- point_assignments %>%
-  count(Zone) %>%
-  mutate(Proportion = round(100 * n / sum(n), 1))
-kable(zone_counts, align = "rrr", col.names = c("Zone", "Points", "Share (%)"))
+if (has_pa) {
+  zone_counts <- point_assignments %>%
+    count(Zone) %>%
+    mutate(Proportion = round(100 * n / sum(n), 1))
+  kable(zone_counts, align = "rrr", col.names = c("Zone", "Points", "Share (%)"))
+} else {
+  cat("Per-point assignments not available on disk.\n")
+}
 ```
 
 ## 5.2 Transition mask
 
 A cell is flagged as a transition zone when the maximum membership at that cell is below
-`r params$transition_threshold`. **`r pct_transition`%** of the study area falls in this category;
-the remaining `r round(100 - pct_transition, 1)`% is a "core" zone with a confident assignment.
+`r params$transition_threshold`. `r if (has_transition) paste0("**", pct_transition, "%** of the study area falls in this category; the remaining ", round(100 - pct_transition, 1), "% is a \"core\" zone with a confident assignment.") else "The transition mask was not written to disk for this run (no UI control for the transition threshold was set); per-cell uncertainty is reported as Shannon entropy in section 8."`
 
 # 6. Zone statistics
 
@@ -368,6 +415,7 @@ if (!requireNamespace("effectsize", quietly = TRUE)) {
 } else {
   suppressPackageStartupMessages(library(effectsize))
 
+  if (!has_pa) stop("`mz_point_assignments.csv` is required for the ANOVA section but was not found.")
   pts <- point_assignments %>% select(fid, Zone)
   df_for_aov <- points_raw %>%
     select(fid, all_of(SOIL_VARS)) %>%
