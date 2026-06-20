@@ -202,6 +202,10 @@ points_path   <- resolve_input(params$points_path,   "soilgrids_data.csv")
 boundary <- if (file.exists(boundary_path)) st_read(boundary_path, quiet = TRUE) else NULL
 soil_stack <- if (file.exists(raster_path)) rast(raster_path) else NULL
 points_raw <- if (file.exists(points_path)) read.csv(points_path) else NULL
+
+# Raster CRS, reused by the §1.1 narrative and by the pre-processing chunk
+# (boundary reprojection). Computed here so the inline prose below can show it.
+raster_crs <- if (!is.null(soil_stack)) crs(soil_stack) else NULL
 ```
 
 The pipeline reads three local data sources. Their metadata is summarized below.
@@ -231,9 +235,12 @@ kable(input_meta, align = "lll")
 
 ## 1.1 Coordinate reference system
 
-Points are read in **EPSG:4326** (lon/lat) and reprojected to the raster CRS. The boundary is
-reprojected to the raster CRS before crop and mask. The raster and the boundary must spatially
-overlap; otherwise the pipeline aborts with a clear error.
+Observation points, the soil raster, and the boundary are aligned to a common
+projected CRS before extraction, crop, and mask. The boundary is reprojected to
+the raster CRS (`r if (!is.null(raster_crs)) as.character(raster_crs) else "n/a"`);
+point coordinates are interpreted in whichever CRS the analysis was run with
+(auto-detected as geographic or projected). The raster and the boundary must
+spatially overlap; otherwise the pipeline aborts with a clear error.
 
 ## 1.2 Study-area boundary
 
@@ -261,20 +268,18 @@ if (!is.null(boundary)) {
 # 2. Pre-processing
 
 ```{r preprocess-load}
-points_sf <- st_as_sf(points_raw,
-                       coords = c("longitude", "latitude"),
-                       crs = 4326)
-if (!is.null(soil_stack)) {
-  raster_crs <- crs(soil_stack)
-  if (!is.null(boundary) &&
-      !identical(as.character(st_crs(boundary)), as.character(raster_crs))) {
-    boundary <- st_transform(boundary, raster_crs)
-  }
-  boundary_vect <- vect(boundary)
-  soil_masked <- crop(soil_stack, boundary_vect)
-  soil_masked <- mask(soil_masked, boundary_vect)
-} else {
-  soil_masked <- NULL
+# Align the boundary to the raster CRS so the uncertainty mask in section 7
+# matches the membership rasters. An earlier version of this chunk also
+# rebuilt `points_sf` and `soil_masked` to mirror the batch pipeline, but
+# neither object is consumed downstream, and reconstructing points_sf
+# assumed fixed coordinate column names ("longitude"/"latitude") + WGS84,
+# which crash the render for any dataset with a different schema (e.g.
+# projected UTM coords or differently-named columns). Both are omitted here
+# so the report is robust to whatever columns the caller actually supplied.
+# `raster_crs` is computed in the inputs-load chunk above.
+if (!is.null(raster_crs) && !is.null(boundary) &&
+    !identical(as.character(st_crs(boundary)), as.character(raster_crs))) {
+  boundary <- st_transform(boundary, raster_crs)
 }
 ```
 
@@ -463,6 +468,10 @@ if (!requireNamespace("effectsize", quietly = TRUE)) {
   suppressPackageStartupMessages(library(effectsize))
 
   if (!has_pa) stop("`mz_point_assignments.csv` is required for the ANOVA section but was not found.")
+  # Ensure a join key: some input CSVs omit `fid`. The pipeline assigns a
+  # sequential fid (1..n) when it is missing, so replicate that here so the
+  # per-point join with point_assignments stays row-aligned.
+  if (!"fid" %in% names(points_raw)) points_raw$fid <- seq_len(nrow(points_raw))
   pts <- point_assignments %>% select(fid, Zone)
   df_for_aov <- points_raw %>%
     select(fid, all_of(SOIL_VARS)) %>%
