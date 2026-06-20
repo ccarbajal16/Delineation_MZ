@@ -2538,7 +2538,32 @@ server <- function(input, output, session) {
                              overwrite = TRUE, datatype = "INT1U", NAflag = 255)
         }
 
-        incProgress(0.5, detail = "Running Quarto CLI")
+        incProgress(0.5, detail = "Staging inputs & running Quarto CLI")
+
+        # Stage the user's uploaded input files to a stable, extension-
+        # preserving location so the Quarto report (a separate process) can
+        # read them. Shiny uploads live in session temp files WITHOUT their
+        # original extension, which can confuse format auto-detection in
+        # sf/terra; copying them out with the original name removes that risk
+        # and lets the report's Inputs/PCA/ANOVA/entropy sections reflect the
+        # actual data instead of the bundled demo.
+        stage_dir <- file.path(tempdir(), "mz_report_inputs")
+        dir.create(stage_dir, showWarnings = FALSE, recursive = TRUE)
+        stage_upload <- function(upload, fallback_name) {
+          if (is.null(upload) || is.null(upload$datapath) ||
+              !file.exists(upload$datapath)) return(NULL)
+          nm <- if (!is.null(upload$name) && nzchar(upload$name)) {
+            upload$name
+          } else {
+            fallback_name
+          }
+          dest <- file.path(stage_dir, nm)
+          ok <- file.copy(upload$datapath, dest, overwrite = TRUE)
+          if (isTRUE(ok)) normalizePath(dest, mustWork = TRUE) else NULL
+        }
+        staged_boundary <- isolate(stage_upload(input$input_boundary, "boundary.gpkg"))
+        staged_raster   <- isolate(stage_upload(input$input_raster,   "soil_predictions.tif"))
+        staged_points   <- isolate(stage_upload(input$input_points,   "soilgrids_data.csv"))
 
         # Resolve absolute paths up front so the wrapper does not depend on
         # CWD. The wrapper is sourced to the GLOBAL env so the function is
@@ -2570,6 +2595,10 @@ server <- function(input, output, session) {
         out_html <- render_mz_report(
           outputs_dir          = "outputs",
           data_dir             = "data",
+          boundary_path        = staged_boundary,
+          raster_path          = staged_raster,
+          points_path          = staged_points,
+          soil_vars            = paste(rv$soil_vars, collapse = ","),
           author               = isolate(input$report_author %||% "MZ Analysis"),
           study_area_name      = isolate(input$report_study_area %||% "Study Area"),
           k_range              = seq(isolate(input$k_min), isolate(input$k_max)),

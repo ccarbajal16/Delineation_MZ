@@ -33,6 +33,16 @@ execute:
 params:
   outputs_dir: "outputs"
   data_dir: "data"
+  # Optional explicit input paths. When empty (the default), the report falls
+  # back to the demo filenames inside data_dir — this is the batch-script path.
+  # The Shiny app passes the user's uploaded files here so the report reflects
+  # the actual inputs instead of the bundled example.
+  boundary_path: ""
+  raster_path: ""
+  points_path: ""
+  # Soil variables to analyze. Empty => use the built-in default set. Pass a
+  # comma-separated string (e.g. "BD,CEC,SOC") to match the caller's columns.
+  soil_vars: ""
   author: "MZ Analysis"
   study_area_name: "Study Area"
   k_range: [2, 3, 4, 5, 6]
@@ -74,8 +84,15 @@ resolve_from_root <- function(p) {
 OUT <- resolve_from_root(params$outputs_dir)
 DATA <- resolve_from_root(params$data_dir)
 
-SOIL_VARS <- c("BD", "CEC", "Fragm", "Sand", "Silt", "Clay",
-               "N", "OCD", "pH", "SOC")
+# Soil variables to analyze. If the caller passed a comma-separated list
+# (e.g. the Shiny app, reflecting the user's column selection), use it;
+# otherwise fall back to the batch script's default variable set.
+SOIL_VARS <- if (!is.null(params$soil_vars) && nzchar(params$soil_vars)) {
+  trimws(strsplit(params$soil_vars, ",")[[1]])
+} else {
+  c("BD", "CEC", "Fragm", "Sand", "Silt", "Clay",
+    "N", "OCD", "pH", "SOC")
+}
 
 # ---- File existence check --------------------------------------------------
 # `mz_transition.tif` and `mz_point_assignments.csv` are *optional*. The Shiny
@@ -160,15 +177,27 @@ optimal value **k = `r opt_k`** was selected by the consensus of the Xie-Beni (X
 Performance Index (FPI), and Normalized Classification Entropy (NCE) indices.
 
 The analysis used `r if (has_pa) paste0("**", n_points, "** observation points and ") else ""`**`r n_soil_vars` soil properties**
-(BD, CEC, Fragm, Sand, Silt, Clay, N, OCD, pH, SOC). Membership surfaces were interpolated by
+(`r paste(SOIL_VARS, collapse = ", ")`). Membership surfaces were interpolated by
 **`r params$interpolation_method`**; `r if (has_transition) paste0(pct_transition, "% of the study area falls in a transition zone (maximum membership below ", params$transition_threshold, ").") else "no transition mask was written to disk; the per-cell uncertainty (entropy) is reported in section 8."`
 
 # 1. Inputs
 
 ```{r inputs-load}
-boundary_path <- file.path(DATA, "agro_geo.gpkg")
-raster_path   <- file.path(DATA, "soil_predictions.tif")
-points_path   <- file.path(DATA, "soilgrids_data.csv")
+# Resolve each input path: use the explicit param when the caller supplied a
+# readable file (e.g. the Shiny app with the user's upload); otherwise fall
+# back to the demo filename inside DATA (the batch-script path). This keeps
+# every downstream section (boundary figure, pre-processing mask, PCA, ANOVA,
+# entropy mask) consistent with whichever inputs actually produced outputs/.
+resolve_input <- function(param_val, demo_name) {
+  if (!is.null(param_val) && nzchar(param_val) && file.exists(param_val)) {
+    return(normalizePath(param_val, mustWork = TRUE))
+  }
+  file.path(DATA, demo_name)
+}
+
+boundary_path <- resolve_input(params$boundary_path, "agro_geo.gpkg")
+raster_path   <- resolve_input(params$raster_path,   "soil_predictions.tif")
+points_path   <- resolve_input(params$points_path,   "soilgrids_data.csv")
 
 boundary <- if (file.exists(boundary_path)) st_read(boundary_path, quiet = TRUE) else NULL
 soil_stack <- if (file.exists(raster_path)) rast(raster_path) else NULL
