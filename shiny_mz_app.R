@@ -2480,11 +2480,15 @@ server <- function(input, output, session) {
         }
 
         # 5b. PNG figure of the zone map (300 DPI, with legend)
+        # IMPORTANT: dev.off() is called IMMEDIATELY after plotting, not via
+        # on.exit(). R only flushes a PNG to disk when the device is closed,
+        # and the Quarto render below reads this file during the same call —
+        # deferring dev.off() to on.exit left the previous (demo) PNG on disk
+        # at render time, so the report's zone-map figure showed the demo.
         png_path <- "outputs/mz_zone_map.png"
         k        <- rv$k_final
         cols     <- zoneColors(k)
         grDevices::png(png_path, width = 8, height = 6, units = "in", res = 300)
-        on.exit(grDevices::dev.off(), add = TRUE)
         terra::plot(rv$zone_hard,
                     main = paste0("Management Zone Map  (k = ", k,
                                   ", Fuzzy C-Means, m = ",
@@ -2493,6 +2497,7 @@ server <- function(input, output, session) {
         graphics::legend("topright",
                          legend = paste0("Zone ", seq_len(k)),
                          fill = cols, border = NA, bty = "n", cex = 0.9)
+        grDevices::dev.off()
 
         # 5c. Validation index plot
         vi_path <- "outputs/mz_validation_all_indices.png"
