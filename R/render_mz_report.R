@@ -202,7 +202,11 @@ render_mz_report <- function(
   }
 
   args <- c(args, param_flags)
-  if (!verbose) args <- c(args, "--quiet")
+  # NOTE: we deliberately do NOT pass --quiet. With --quiet, Quarto also
+  # suppresses knitr's error traceback on stderr, which would make every
+  # render failure invisible (the wrapper would only see a non-zero exit
+  # status with no clue why). Output is captured to temp files below, so the
+  # console stays clean regardless of verbosity.
 
   message("Rendering MZ report (format = ", format, ") ...")
   if (verbose) {
@@ -210,21 +214,41 @@ render_mz_report <- function(
             paste(args, collapse = " "))
   }
 
-  # Always capture stderr to a temp file so failures are diagnosable even
-  # when the caller asked for quiet output. The file is removed on success.
+  # Capture BOTH channels to temp files. Quarto writes its progress to stderr
+  # and knitr's error traceback (the bit we need on failure) to stderr as well.
+  # The files are removed on exit; on failure their contents are folded into
+  # the error message so the caller sees the real cause.
+  stdout_log <- tempfile(fileext = "_quarto_stdout.log")
   stderr_log <- tempfile(fileext = "_quarto_stderr.log")
-  on.exit(if (file.exists(stderr_log)) file.remove(stderr_log), add = TRUE)
+  on.exit({
+    if (file.exists(stdout_log)) file.remove(stdout_log)
+    if (file.exists(stderr_log)) file.remove(stderr_log)
+  }, add = TRUE)
 
-  result <- system2(quarto_bin, args, stdout = "", stderr = stderr_log)
+  result <- system2(quarto_bin, args, stdout = stdout_log, stderr = stderr_log)
+  # system2 returns the exit status as the value directly when stdout/stderr
+  # are file paths (no "status" attribute); it is carried as an attribute
+  # only when stdout = TRUE. Handle both so a Quarto failure is always caught
+  # instead of falling through to the (misleading) mtime check.
   status <- attr(result, "status")
-  if (!is.null(status) && status != 0L) {
-    err_msg <- if (file.exists(stderr_log) && file.size(stderr_log) > 0) {
-      paste(readLines(stderr_log, warn = FALSE), collapse = "\n")
-    } else {
-      "(no stderr captured — re-run with verbose = TRUE for the command)"
+  if (is.null(status)) status <- suppressWarnings(as.integer(result[1L]))
+  read_log <- function(f) {
+    if (file.exists(f) && file.size(f) > 0)
+      paste(readLines(f, warn = FALSE), collapse = "\n")
+    else ""
+  }
+  if (!is.na(status) && status != 0L) {
+    combined <- trimws(paste(c(read_log(stdout_log), read_log(stderr_log)),
+                             collapse = "\n"))
+    if (!nzchar(combined)) {
+      combined <- "(no output captured — re-run with verbose = TRUE for the command)"
     }
     stop("Quarto render failed with status ", status, ".\n",
-         "--- stderr ---\n", err_msg, "\n--- end stderr ---")
+         "--- quarto output ---\n", combined, "\n--- end output ---")
+  }
+  if (verbose) {
+    out_txt <- read_log(stdout_log)
+    if (nzchar(out_txt)) message(out_txt)
   }
 
   rendered <- if (is.null(output_dir)) {
