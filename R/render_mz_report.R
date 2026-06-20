@@ -17,7 +17,21 @@
 #'
 #' @param outputs_dir Path to the directory containing the pipeline outputs
 #'   (`mz_validation.csv`, `mz_zone_map.tif`, etc.). Default: `"outputs"`.
-#' @param data_dir Path to the input data directory. Default: `"data"`.
+#' @param data_dir Path to the input data directory. Default: `"data"`. Used as a
+#'   fallback for the input files when the explicit `*_path` arguments are not
+#'   supplied (the batch-script entry point relies on this).
+#' @param boundary_path Optional explicit path to the study-area boundary file.
+#'   When supplied (e.g. by the Shiny app with the user's uploaded file), the
+#'   report uses it instead of `<data_dir>/agro_geo.gpkg`. `NULL` keeps the
+#'   batch-script behaviour.
+#' @param raster_path Optional explicit path to the soil-property raster.
+#'   Overrides `<data_dir>/soil_predictions.tif`. `NULL` keeps the default.
+#' @param points_path Optional explicit path to the observation-points CSV.
+#'   Overrides `<data_dir>/soilgrids_data.csv`. `NULL` keeps the default.
+#' @param soil_vars Optional soil-variable names to analyze, as a character
+#'   vector (or a single comma-separated string). When supplied, overrides the
+#'   report's built-in default variable set so the report adapts to whatever
+#'   columns the caller actually clustered on. `NULL` keeps the default.
 #' @param format Output format. One of `"html"`, `"pdf"`. Default: `"html"`.
 #' @param author Author name to print on the report cover.
 #' @param study_area_name Short label for the study area (printed on cover).
@@ -41,6 +55,10 @@
 render_mz_report <- function(
   outputs_dir = "outputs",
   data_dir = "data",
+  boundary_path = NULL,
+  raster_path = NULL,
+  points_path = NULL,
+  soil_vars = NULL,
   format = c("html", "pdf"),
   author = "MZ Analysis",
   study_area_name = "Study Area",
@@ -124,9 +142,27 @@ render_mz_report <- function(
     }
   }
 
+  # Optional input-path / variable params. Only emitted when the caller
+  # supplies them, so the batch-script entry point (which relies on the demo
+  # files living in data/ and the built-in variable set) keeps working
+  # unchanged. soil_vars is collapsed to a comma-separated string to dodge
+  # YAML/JSON array-quoting headaches on the command line; the .qmd splits it.
+  opt_flag <- function(key, val) {
+    if (is.null(val)) return(NULL)
+    if (is.character(val) && length(val) == 1L && !nzchar(val)) return(NULL)
+    if (identical(key, "soil_vars") && is.character(val) && length(val) > 1L) {
+      val <- paste(val, collapse = ",")
+    }
+    p_flag(key, val)
+  }
+
   param_flags <- c(
     p_flag("outputs_dir",          outputs_dir),
     p_flag("data_dir",             data_dir),
+    opt_flag("boundary_path",      boundary_path),
+    opt_flag("raster_path",        raster_path),
+    opt_flag("points_path",        points_path),
+    opt_flag("soil_vars",          soil_vars),
     p_flag("author",               author),
     p_flag("study_area_name",      study_area_name),
     p_flag("k_range",              as.integer(k_range)),
@@ -166,7 +202,11 @@ render_mz_report <- function(
   }
 
   args <- c(args, param_flags)
-  if (!verbose) args <- c(args, "--quiet")
+  # NOTE: we deliberately do NOT pass --quiet. With --quiet, Quarto also
+  # suppresses knitr's error traceback on stderr, which would make every
+  # render failure invisible (the wrapper would only see a non-zero exit
+  # status with no clue why). Output is captured to temp files below, so the
+  # console stays clean regardless of verbosity.
 
   message("Rendering MZ report (format = ", format, ") ...")
   if (verbose) {
@@ -174,21 +214,41 @@ render_mz_report <- function(
             paste(args, collapse = " "))
   }
 
-  # Always capture stderr to a temp file so failures are diagnosable even
-  # when the caller asked for quiet output. The file is removed on success.
+  # Capture BOTH channels to temp files. Quarto writes its progress to stderr
+  # and knitr's error traceback (the bit we need on failure) to stderr as well.
+  # The files are removed on exit; on failure their contents are folded into
+  # the error message so the caller sees the real cause.
+  stdout_log <- tempfile(fileext = "_quarto_stdout.log")
   stderr_log <- tempfile(fileext = "_quarto_stderr.log")
-  on.exit(if (file.exists(stderr_log)) file.remove(stderr_log), add = TRUE)
+  on.exit({
+    if (file.exists(stdout_log)) file.remove(stdout_log)
+    if (file.exists(stderr_log)) file.remove(stderr_log)
+  }, add = TRUE)
 
-  result <- system2(quarto_bin, args, stdout = "", stderr = stderr_log)
+  result <- system2(quarto_bin, args, stdout = stdout_log, stderr = stderr_log)
+  # system2 returns the exit status as the value directly when stdout/stderr
+  # are file paths (no "status" attribute); it is carried as an attribute
+  # only when stdout = TRUE. Handle both so a Quarto failure is always caught
+  # instead of falling through to the (misleading) mtime check.
   status <- attr(result, "status")
-  if (!is.null(status) && status != 0L) {
-    err_msg <- if (file.exists(stderr_log) && file.size(stderr_log) > 0) {
-      paste(readLines(stderr_log, warn = FALSE), collapse = "\n")
-    } else {
-      "(no stderr captured — re-run with verbose = TRUE for the command)"
+  if (is.null(status)) status <- suppressWarnings(as.integer(result[1L]))
+  read_log <- function(f) {
+    if (file.exists(f) && file.size(f) > 0)
+      paste(readLines(f, warn = FALSE), collapse = "\n")
+    else ""
+  }
+  if (!is.na(status) && status != 0L) {
+    combined <- trimws(paste(c(read_log(stdout_log), read_log(stderr_log)),
+                             collapse = "\n"))
+    if (!nzchar(combined)) {
+      combined <- "(no output captured — re-run with verbose = TRUE for the command)"
     }
     stop("Quarto render failed with status ", status, ".\n",
-         "--- stderr ---\n", err_msg, "\n--- end stderr ---")
+         "--- quarto output ---\n", combined, "\n--- end output ---")
+  }
+  if (verbose) {
+    out_txt <- read_log(stdout_log)
+    if (nzchar(out_txt)) message(out_txt)
   }
 
   rendered <- if (is.null(output_dir)) {
